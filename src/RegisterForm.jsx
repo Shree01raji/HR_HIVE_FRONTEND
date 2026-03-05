@@ -398,6 +398,7 @@ export default function RegisterForm() {
                     <option value="CANDIDATE">Candidate</option>
                     <option value="ACCOUNTANT">Accountant</option>
                     <option value="ADMIN">Admin</option>
+                    <option value="ORG_ADMIN">ORG Admin</option>
                   </select>
                   <p className="text-xs text-gray-500 mt-1">
                     {hrEmployeeData.role === 'EMPLOYEE'
@@ -410,6 +411,8 @@ export default function RegisterForm() {
                       ? 'Register as accountant - you will be assigned ACCOUNTS role by admin to access timesheet approval and payroll processing'
                       : hrEmployeeData.role === 'ADMIN'
                       ? 'Register as Admin for your specific organization. You will have admin privileges within your organization only.'
+                      : hrEmployeeData.role === 'ORG_ADMIN'
+                      ? 'Register as Organization Admin. You will have elevated organization-level privileges; the organization must verify your account.'
                       : 'Browse jobs, apply for positions, and track your applications'}
                   </p>
                     {/* No special validation needed for organization-specific Admin role */}

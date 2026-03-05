@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { employeeAPI } from '../../services/api';
 import { Link } from 'react-router-dom';
-import { FiEye, FiSearch, FiFilter, FiCheckCircle, FiAlertCircle, FiClock, FiTrash2 } from 'react-icons/fi';
+import { FiEye, FiSearch, FiFilter, FiCheckCircle, FiAlertCircle, FiClock, FiTrash2, FiLock, FiX } from 'react-icons/fi';
 
 export default function Employees() {
   const [employees, setEmployees] = useState([]);
@@ -12,6 +12,19 @@ export default function Employees() {
   const [statusFilter, setStatusFilter] = useState('');
   const [sortBy, setSortBy] = useState('name');
   const [sortOrder, setSortOrder] = useState('asc');
+  const [provisioningAccessByEmployee, setProvisioningAccessByEmployee] = useState({});
+  const [showAddEmployeeModal, setShowAddEmployeeModal] = useState(false);
+  const [addingEmployee, setAddingEmployee] = useState(false);
+  const [addEmployeeForm, setAddEmployeeForm] = useState({
+    first_name: '',
+    last_name: '',
+    email: '',
+    department: '',
+    designation: '',
+    role: 'EMPLOYEE',
+    joining_date: '',
+    password: '',
+  });
 
   // CRITICAL: Ensure employees state is always an array - defensive check
   useEffect(() => {
@@ -127,6 +140,106 @@ export default function Employees() {
       } finally {
         setLoading(false);
       }
+    }
+  };
+
+  const handleProvisionAccess = async (employee) => {
+    if (!employee?.employee_id) return;
+
+    const customPassword = window.prompt(
+      `Set temporary password for ${employee.first_name || ''} ${employee.last_name || ''}?\n\nLeave blank for auto-generated password:`,
+      ''
+    );
+
+    if (customPassword === null) {
+      return;
+    }
+
+    try {
+      setProvisioningAccessByEmployee((prev) => ({ ...prev, [employee.employee_id]: true }));
+      const payload = { password: customPassword.trim() || null };
+      const response = await employeeAPI.provisionAccess(employee.employee_id, payload);
+
+      const lines = [
+        response.message || 'Employee access provisioned successfully',
+        `Login Email: ${response.login_email || employee.personal_email || employee.email || 'N/A'}`,
+        `Temporary Password: ${response.temporary_password || 'N/A'}`,
+      ];
+
+      if (response.company_code) {
+        lines.push(`Company Code: ${response.company_code}`);
+      }
+
+      lines.push(`Email sent: ${response.email_sent ? 'Yes' : 'No (share credentials manually)'}`);
+      window.alert(lines.join('\n'));
+    } catch (err) {
+      console.error('Error provisioning employee access:', err);
+      window.alert(err.response?.data?.detail || err.message || 'Failed to provision employee access');
+    } finally {
+      setProvisioningAccessByEmployee((prev) => ({ ...prev, [employee.employee_id]: false }));
+    }
+  };
+
+  const updateAddEmployeeField = (field, value) => {
+    setAddEmployeeForm((prev) => ({ ...prev, [field]: value }));
+  };
+
+  const resetAddEmployeeForm = () => {
+    setAddEmployeeForm({
+      first_name: '',
+      last_name: '',
+      email: '',
+      department: '',
+      designation: '',
+      role: 'EMPLOYEE',
+      joining_date: '',
+      password: '',
+    });
+  };
+
+  const handleAddEmployee = async (event) => {
+    event.preventDefault();
+
+    if (
+      !addEmployeeForm.first_name.trim() ||
+      !addEmployeeForm.last_name.trim() ||
+      !addEmployeeForm.email.trim() ||
+      !addEmployeeForm.department.trim() ||
+      !addEmployeeForm.joining_date
+    ) {
+      window.alert('Please fill First Name, Last Name, Email, Department, and Joining Date.');
+      return;
+    }
+
+    try {
+      setAddingEmployee(true);
+      const payload = {
+        first_name: addEmployeeForm.first_name.trim(),
+        last_name: addEmployeeForm.last_name.trim(),
+        personal_email: addEmployeeForm.email.trim(),
+        department: addEmployeeForm.department.trim(),
+        designation: addEmployeeForm.designation.trim() || null,
+        role: addEmployeeForm.role,
+        joining_date: new Date(addEmployeeForm.joining_date).toISOString(),
+        password: addEmployeeForm.password.trim() || '',
+        skip_company_email_generation: true,
+        skip_document_onboarding: true,
+      };
+
+      const created = await employeeAPI.create(payload);
+      setEmployees((prev) => {
+        const list = Array.isArray(prev) ? prev : [];
+        return [created, ...list];
+      });
+
+      setShowAddEmployeeModal(false);
+      resetAddEmployeeForm();
+      window.alert(`Employee ${created.first_name} ${created.last_name} created. Temporary credentials were sent.`);
+    } catch (err) {
+      console.error('Error creating employee from Employees page:', err);
+      window.alert(err.response?.data?.detail || err.message || 'Failed to add employee');
+    } finally {
+      setAddingEmployee(false);
     }
   };
 
@@ -251,12 +364,12 @@ export default function Employees() {
             Showing {filteredAndSortedEmployees.length} employees across {groupedEmployees.length} departments
           </p>
         </div>
-        <Link
-          to="/admin/employees/new"
+        <button
+          onClick={() => setShowAddEmployeeModal(true)}
           className="bg-blue-500 text-white px-4 py-2 rounded-lg hover:bg-blue-600 transition-colors text-sm font-medium"
         >
           Add Employee
-        </Link>
+        </button>
       </div>
 
       {/* Filters and Search */}
@@ -392,13 +505,24 @@ export default function Employees() {
                     </div>
 
                     <div className="mt-4 flex justify-between items-center">
-                      <Link
-                        to={`/admin/employees/${employee.employee_id}`}
-                        className="inline-flex items-center gap-1 text-sm text-blue-600 hover:text-blue-800 font-medium"
-                      >
-                        <FiEye className="w-4 h-4" />
-                        View Profile
-                      </Link>
+                      <div className="flex items-center gap-2">
+                        <Link
+                          to={`/admin/employees/${employee.employee_id}`}
+                          className="inline-flex items-center gap-1 text-sm text-blue-600 hover:text-blue-800 font-medium"
+                        >
+                          <FiEye className="w-4 h-4" />
+                          View Profile
+                        </Link>
+                        <button
+                          onClick={() => handleProvisionAccess(employee)}
+                          className="inline-flex items-center gap-1 text-sm text-indigo-600 hover:text-indigo-800 font-medium hover:bg-indigo-50 px-2 py-1 rounded transition-colors disabled:opacity-60"
+                          title="Send Temporary Password"
+                          disabled={!!provisioningAccessByEmployee[employee.employee_id]}
+                        >
+                          <FiLock className="w-4 h-4" />
+                          {provisioningAccessByEmployee[employee.employee_id] ? 'Sending...' : 'Send Temp Password'}
+                        </button>
+                      </div>
                       <button
                         onClick={() => handleDelete(employee.employee_id, `${employee.first_name} ${employee.last_name}`)}
                         className="inline-flex items-center gap-1 text-sm text-red-600 hover:text-red-800 font-medium hover:bg-red-50 px-2 py-1 rounded transition-colors"
@@ -415,6 +539,122 @@ export default function Employees() {
         </div>
         ))}
       </div>
+
+      {showAddEmployeeModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-2xl bg-white rounded-xl shadow-2xl border border-blue-100">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-gray-200">
+              <h2 className="text-lg font-semibold text-gray-900">Add Employee (No Company Email Generation)</h2>
+              <button
+                onClick={() => {
+                  if (!addingEmployee) {
+                    setShowAddEmployeeModal(false);
+                    resetAddEmployeeForm();
+                  }
+                }}
+                className="p-1 text-gray-500 hover:text-gray-700"
+                disabled={addingEmployee}
+              >
+                <FiX className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleAddEmployee} className="p-5 space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <input
+                  type="text"
+                  placeholder="First Name"
+                  value={addEmployeeForm.first_name}
+                  onChange={(e) => updateAddEmployeeField('first_name', e.target.value)}
+                  className="px-3 py-2 border border-gray-300 rounded-lg text-sm"
+                  required
+                />
+                <input
+                  type="text"
+                  placeholder="Last Name"
+                  value={addEmployeeForm.last_name}
+                  onChange={(e) => updateAddEmployeeField('last_name', e.target.value)}
+                  className="px-3 py-2 border border-gray-300 rounded-lg text-sm"
+                  required
+                />
+                <input
+                  type="email"
+                  placeholder="Email"
+                  value={addEmployeeForm.email}
+                  onChange={(e) => updateAddEmployeeField('email', e.target.value)}
+                  className="px-3 py-2 border border-gray-300 rounded-lg text-sm"
+                  required
+                />
+                <input
+                  type="text"
+                  placeholder="Department"
+                  value={addEmployeeForm.department}
+                  onChange={(e) => updateAddEmployeeField('department', e.target.value)}
+                  className="px-3 py-2 border border-gray-300 rounded-lg text-sm"
+                  required
+                />
+                <input
+                  type="text"
+                  placeholder="Designation"
+                  value={addEmployeeForm.designation}
+                  onChange={(e) => updateAddEmployeeField('designation', e.target.value)}
+                  className="px-3 py-2 border border-gray-300 rounded-lg text-sm"
+                />
+                <select
+                  value={addEmployeeForm.role}
+                  onChange={(e) => updateAddEmployeeField('role', e.target.value)}
+                  className="px-3 py-2 border border-gray-300 rounded-lg text-sm"
+                >
+                  <option value="EMPLOYEE">Employee</option>
+                  <option value="ACCOUNTANT">Accountant</option>
+                  <option value="HR_MANAGER">HR Manager</option>
+                  <option value="ADMIN">Admin</option>
+                  <option value="MANAGER">Manager</option>
+                </select>
+                <input
+                  type="date"
+                  value={addEmployeeForm.joining_date}
+                  onChange={(e) => updateAddEmployeeField('joining_date', e.target.value)}
+                  className="px-3 py-2 border border-gray-300 rounded-lg text-sm"
+                  required
+                />
+                <input
+                  type="text"
+                  placeholder="Temporary Password (optional)"
+                  value={addEmployeeForm.password}
+                  onChange={(e) => updateAddEmployeeField('password', e.target.value)}
+                  className="px-3 py-2 border border-gray-300 rounded-lg text-sm"
+                />
+              </div>
+
+              <p className="text-xs text-gray-500">
+                This flow creates onboarding access without auto-generating a separate company email.
+              </p>
+
+              <div className="flex justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowAddEmployeeModal(false);
+                    resetAddEmployeeForm();
+                  }}
+                  className="px-4 py-2 border border-gray-300 rounded-lg text-sm"
+                  disabled={addingEmployee}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700 disabled:opacity-60"
+                  disabled={addingEmployee}
+                >
+                  {addingEmployee ? 'Adding...' : 'Create Employee'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

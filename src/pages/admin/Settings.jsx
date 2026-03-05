@@ -405,6 +405,9 @@ const [showConfiguredList, setShowConfiguredList] = useState(true);
         const config = data.features_config;
         setFeaturesConfig({
           // Only default to true if key doesn't exist, preserve false values explicitly set
+          enable_dashboard: config.hasOwnProperty('enable_dashboard') ? config.enable_dashboard !== false : true,
+          enable_settings: config.hasOwnProperty('enable_settings') ? config.enable_settings !== false : true,
+          enable_finance: config.hasOwnProperty('enable_finance') ? config.enable_finance !== false : true,
           enable_ai_agents: config.hasOwnProperty('enable_ai_agents') ? config.enable_ai_agents !== false : true,
           enable_learning: config.hasOwnProperty('enable_learning') ? config.enable_learning !== false : true,
           enable_engagement: config.hasOwnProperty('enable_engagement') ? config.enable_engagement !== false : true,
@@ -581,6 +584,66 @@ const [showConfiguredList, setShowConfiguredList] = useState(true);
     } finally {
       setSaving(false);
     }
+  };
+
+  const saveLeaveConfig = async (nextLeaveConfig, successMessage = 'Leave configuration updated successfully!') => {
+    try {
+      setError(null);
+      const existingOtherSettings = settings?.other_settings || {};
+      const response = await api.put('/settings/', {
+        other_settings: {
+          ...existingOtherSettings,
+          leave_config: nextLeaveConfig,
+          door_access_config: doorAccessConfig
+        }
+      });
+
+      setLeaveConfig(nextLeaveConfig);
+      setSettings(response.data);
+      setSuccess(successMessage);
+      setTimeout(() => setSuccess(null), 3000);
+
+      if (isConnected) {
+        sendRealTimeMessage('settings_update', {
+          type: 'settings_update',
+          settings: response.data,
+          updated_by: user?.email || user?.first_name,
+          timestamp: new Date().toISOString()
+        });
+      }
+
+      window.dispatchEvent(new CustomEvent('settings-update', {
+        detail: {
+          type: 'settings_update',
+          settings: response.data
+        }
+      }));
+    } catch (err) {
+      console.error('Error updating leave configuration:', err);
+      setError(err.response?.data?.detail || 'Failed to update leave configuration');
+    }
+  };
+
+  const handleAddLeaveType = async (rawLeaveType) => {
+    const leaveType = String(rawLeaveType || '').trim();
+    if (!leaveType) return;
+    if (leaveConfig[leaveType] !== undefined) {
+      setError('This leave type already exists.');
+      setTimeout(() => setError(null), 3000);
+      return;
+    }
+
+    const nextLeaveConfig = {
+      ...leaveConfig,
+      [leaveType]: 0
+    };
+    await saveLeaveConfig(nextLeaveConfig, `${leaveType} added successfully!`);
+  };
+
+  const handleDeleteLeaveType = async (leaveType) => {
+    const nextLeaveConfig = { ...leaveConfig };
+    delete nextLeaveConfig[leaveType];
+    await saveLeaveConfig(nextLeaveConfig, `${leaveType} removed successfully!`);
   };
   
   const handleAddTask = () => {
@@ -1340,14 +1403,15 @@ const handleDeleteLeaveFile = async (fileId) => {
                 </div>
                 <button
                   onClick={() => {
-                    
-                    setLeaveConfig({
-                      'Paid Leave': 20,
-                      'Sick Leave': 10,
+                    const quickSetupConfig = {
+                      'Casual Leave': 10,
+                      'Compensatory Off': 10,
                       'Unpaid Leave': 5,
-                      'Maternity': 90,
-                      'Paternity': 15
-                    });
+                      'PL or Earned Leave': 20,
+                      'Sick Leave': 15,
+                      'Permission Required': 10
+                    };
+                    saveLeaveConfig(quickSetupConfig, 'Default leave types added successfully!');
                   }}
                   className="ml-4 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm font-medium whitespace-nowrap"
                 >
@@ -1370,14 +1434,23 @@ const handleDeleteLeaveFile = async (fileId) => {
                     value={days}
                     onChange={(e) => {
                       const newValue = parseInt(e.target.value) || 0;
-                      setLeaveConfig({
+                      const nextLeaveConfig = {
                         ...leaveConfig,
                         [leaveType]: newValue
-                      });
+                      };
+                      setLeaveConfig(nextLeaveConfig);
+                      saveLeaveConfig(nextLeaveConfig, `${leaveType} updated successfully!`);
                     }}
                     className="w-20 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent text-right"
                   />
                   <span className="text-sm text-gray-500">days</span>
+                  <button
+                    type="button"
+                    onClick={() => handleDeleteLeaveType(leaveType)}
+                    className="px-2 py-1 bg-red-100 text-red-700 rounded-md hover:bg-red-200 transition-colors text-xs"
+                  >
+                    Delete
+                  </button>
                 </div>
               </div>
             ))}
@@ -1394,13 +1467,8 @@ const handleDeleteLeaveFile = async (fileId) => {
                   if (e.key === 'Enter') {
                     const input = e.target;
                     const leaveType = input.value.trim();
-                    if (leaveType && !leaveConfig[leaveType]) {
-                      setLeaveConfig({
-                        ...leaveConfig,
-                        [leaveType]: 0
-                      });
-                      input.value = '';
-                    }
+                    handleAddLeaveType(leaveType);
+                    input.value = '';
                   }
                 }}
               />
@@ -1408,13 +1476,8 @@ const handleDeleteLeaveFile = async (fileId) => {
                 onClick={() => {
                   const input = document.getElementById('newLeaveType');
                   const leaveType = input?.value.trim();
-                  if (leaveType && !leaveConfig[leaveType]) {
-                    setLeaveConfig({
-                      ...leaveConfig,
-                      [leaveType]: 0
-                    });
-                    if (input) input.value = '';
-                  }
+                  handleAddLeaveType(leaveType);
+                  if (input) input.value = '';
                 }}
                 className="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors"
               >

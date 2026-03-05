@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { FiCalendar, FiInfo, FiCheckCircle, FiXCircle, FiClock } from 'react-icons/fi';
-import { leavePolicyAPI } from '../../services/api';
+import api, { leavePolicyAPI } from '../../services/api';
 
 export default function LeavePolicies() {
   const [policies, setPolicies] = useState([]);
@@ -15,9 +15,20 @@ export default function LeavePolicies() {
     try {
       setLoading(true);
       setError(null);
-      // Fetch only active policies for employees
-      const data = await leavePolicyAPI.getPolicies(true);
-      setPolicies(Array.isArray(data) ? data : []);
+      // Fetch active policies and configured leave types from settings
+      const [policiesData, leaveConfigResponse] = await Promise.all([
+        leavePolicyAPI.getPolicies(true),
+        api.get('/settings/leave-config').catch(() => ({ data: { leave_config: {} } }))
+      ]);
+
+      const configuredLeaveTypes = Object.keys(leaveConfigResponse?.data?.leave_config || {});
+      const safePolicies = Array.isArray(policiesData) ? policiesData : [];
+
+      const filteredPolicies = configuredLeaveTypes.length > 0
+        ? safePolicies.filter((policy) => configuredLeaveTypes.includes(policy?.leave_type))
+        : safePolicies;
+
+      setPolicies(filteredPolicies);
     } catch (err) {
       console.error('Error fetching leave policies:', err);
       setError('Failed to load leave policies. Please try again later.');

@@ -1,172 +1,441 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { managerAPI, workflowAPI } from '../../services/api';
-import { WorkflowStatusCard, WorkflowDiagram, WorkflowTimeline } from '../../components/workflow';
-
-const formatDate = (value) => {
-  if (!value) return '-';
-  return new Date(value).toLocaleDateString();
-};
+import React, { useState, useEffect } from 'react';
+import { FiCheck, FiX, FiClock, FiUser, FiCalendar, FiFileText, FiChevronLeft, FiChevronRight, FiEye } from 'react-icons/fi';
+import { managerAPI } from '../../services/api';
 
 export default function LeaveManagement() {
   const [leaves, setLeaves] = useState([]);
-  const [team, setTeam] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [workflows, setWorkflows] = useState({});
-  const [expandedWorkflow, setExpandedWorkflow] = useState(null);
+  const [filter, setFilter] = useState('all');
+  const [currentCardIndex, setCurrentCardIndex] = useState(0);
+  const [showDetailsPanel, setShowDetailsPanel] = useState(false);
+  const [selectedLeave, setSelectedLeave] = useState(null);
 
-  const teamMap = useMemo(() => {
-    const map = new Map();
-    team.forEach((member) => {
-      map.set(member.employee_id, `${member.first_name || ''} ${member.last_name || ''}`.trim() || member.email);
-    });
-    return map;
-  }, [team]);
+  useEffect(() => {
+    fetchLeaves();
+  }, []);
 
-  const loadData = async () => {
+  useEffect(() => {
+    const handleKeyPress = (event) => {
+      if (event.key === 'ArrowLeft') {
+        handleCardSwipe('right');
+      } else if (event.key === 'ArrowRight') {
+        handleCardSwipe('left');
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyPress);
+    return () => window.removeEventListener('keydown', handleKeyPress);
+  }, [currentCardIndex, leaves, filter]);
+
+  const fetchLeaves = async () => {
     try {
       setLoading(true);
       setError(null);
+
       const [reports, teamLeaves] = await Promise.all([
-        managerAPI.getDirectReports(),
-        managerAPI.getTeamLeaves()
+        managerAPI.getDirectReports().catch(() => []),
+        managerAPI.getTeamLeaves().catch(() => [])
       ]);
-      setTeam(reports || []);
-      setLeaves(teamLeaves || []);
-      
-      // Fetch workflows for each leave request
-      const workflowMap = {};
-      for (const leave of (teamLeaves || [])) {
-        try {
-          const leaveWorkflows = await workflowAPI.getInstances('leave', leave.leave_id);
-          if (leaveWorkflows?.length > 0) {
-            workflowMap[leave.leave_id] = leaveWorkflows[0];
-          }
-        } catch (err) {
-          console.warn(`Failed to fetch workflow for leave ${leave.leave_id}:`, err);
-        }
-      }
-      setWorkflows(workflowMap);
+
+      const reportNameMap = new Map((reports || []).map((member) => ([
+        member.employee_id,
+        `${member.first_name || ''} ${member.last_name || ''}`.trim() || member.email || `Employee #${member.employee_id}`
+      ])));
+
+      const normalizedLeaves = (teamLeaves || []).map((leave) => ({
+        ...leave,
+        employee_name: leave.employee_name || reportNameMap.get(leave.employee_id) || `Employee #${leave.employee_id}`
+      }));
+
+      setLeaves(normalizedLeaves);
     } catch (err) {
-      console.error('Failed to load team leaves:', err);
-      setError('Failed to load team leave requests.');
+      console.error('Failed to fetch team leaves:', err);
+      setError(err.response?.data?.detail || 'Failed to load leave applications');
     } finally {
       setLoading(false);
     }
   };
 
-  useEffect(() => {
-    loadData();
-  }, []);
-
   const handleApprove = async (leaveId) => {
-    await managerAPI.approveLeave(leaveId);
-    await loadData();
+    try {
+      await managerAPI.approveLeave(leaveId);
+      await fetchLeaves();
+    } catch (err) {
+      console.error('Failed to approve leave:', err);
+      setError(err.response?.data?.detail || 'Failed to approve leave application');
+    }
   };
 
   const handleReject = async (leaveId) => {
-    const reason = window.prompt('Reason for rejection?');
-    if (!reason) return;
-    await managerAPI.rejectLeave(leaveId, reason);
-    await loadData();
+    try {
+      const reason = window.prompt('Please provide a reason for rejection:');
+      if (!reason) return;
+      await managerAPI.rejectLeave(leaveId, reason);
+      await fetchLeaves();
+    } catch (err) {
+      console.error('Failed to reject leave:', err);
+      setError(err.response?.data?.detail || 'Failed to reject leave application');
+    }
+  };
+
+  const filteredLeaves = leaves.filter((leave) => {
+    if (filter === 'all') return true;
+    return String(leave.status || '').toLowerCase() === filter.toLowerCase();
+  });
+
+  const handleCardSwipe = (direction) => {
+    if (direction === 'left' && currentCardIndex < filteredLeaves.length - 1) {
+      setCurrentCardIndex(currentCardIndex + 1);
+    } else if (direction === 'right' && currentCardIndex > 0) {
+      setCurrentCardIndex(currentCardIndex - 1);
+    }
+  };
+
+  const getCurrentLeave = () => filteredLeaves[currentCardIndex] || null;
+
+  const handleViewDetails = (leave) => {
+    setSelectedLeave(leave);
+    setShowDetailsPanel(true);
+  };
+
+  const getStatusColor = (status) => {
+    switch (String(status || '').toLowerCase()) {
+      case 'pending':
+        return 'bg-yellow-100 text-yellow-800';
+      case 'approved':
+        return 'bg-green-100 text-green-800';
+      case 'rejected':
+        return 'bg-red-100 text-red-800';
+      default:
+        return 'bg-gray-100 text-gray-800';
+    }
+  };
+
+  const getStatusIcon = (status) => {
+    switch (String(status || '').toLowerCase()) {
+      case 'pending':
+        return <FiClock className="w-4 h-4" />;
+      case 'approved':
+        return <FiCheck className="w-4 h-4" />;
+      case 'rejected':
+        return <FiX className="w-4 h-4" />;
+      default:
+        return <FiClock className="w-4 h-4" />;
+    }
   };
 
   if (loading) {
-    return <div className="text-gray-600">Loading leave requests...</div>;
+    return (
+      <div className="flex items-center justify-center h-64">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+      </div>
+    );
   }
 
   if (error) {
-    return <div className="bg-white p-4 rounded-lg shadow-sm text-red-600">{error}</div>;
+    return (
+      <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+        <p className="text-red-800">{error}</p>
+        <button
+          onClick={fetchLeaves}
+          className="mt-2 px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700"
+        >
+          Retry
+        </button>
+      </div>
+    );
   }
 
   return (
-    <div className="space-y-4">
-      <div>
-        <h1 className="text-2xl font-bold text-gray-800">Team Leave Management</h1>
-        <p className="text-sm text-gray-600">Approve or reject leave requests for your direct reports.</p>
+    <div className="h-screen flex flex-col p-4">
+      <div className="flex justify-between items-center mb-4">
+        <div>
+          <h2 className="text-xl font-bold text-gray-900">Leave Approvals</h2>
+          <p className="text-sm text-gray-600">Review and manage team leave applications</p>
+        </div>
+        <button
+          onClick={fetchLeaves}
+          className="px-3 py-2 bg-[#181c52] text-white rounded-lg hover:bg-[#10133a] transition-colors text-sm"
+        >
+          Refresh
+        </button>
       </div>
 
-      <div className="bg-white rounded-lg shadow-sm overflow-x-auto">
-        <table className="min-w-full text-sm">
-          <thead className="bg-gray-50 text-gray-600">
-            <tr>
-              <th className="px-4 py-3 text-left">Employee</th>
-              <th className="px-4 py-3 text-left">Type</th>
-              <th className="px-4 py-3 text-left">Start</th>
-              <th className="px-4 py-3 text-left">End</th>
-              <th className="px-4 py-3 text-left">Status</th>
-              <th className="px-4 py-3 text-right">Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {leaves.length === 0 && (
-              <tr>
-                <td colSpan="6" className="px-4 py-6 text-center text-gray-500">
-                  No leave requests found.
-                </td>
-              </tr>
-            )}
-            {leaves.map((leave) => {
-              const workflow = workflows[leave.leave_id];
-              return (
-                <React.Fragment key={leave.leave_id}>
-                  <tr className="border-t">
-                    <td className="px-4 py-3">
-                      {teamMap.get(leave.employee_id) || `Employee #${leave.employee_id}`}
-                    </td>
-                    <td className="px-4 py-3">{leave.leave_type}</td>
-                    <td className="px-4 py-3">{formatDate(leave.start_date)}</td>
-                    <td className="px-4 py-3">{formatDate(leave.end_date)}</td>
-                    <td className="px-4 py-3">{leave.status}</td>
-                    <td className="px-4 py-3 text-right space-x-2">
-                      {leave.status === 'PENDING' && (
-                        <>
-                          <button
-                            onClick={() => handleApprove(leave.leave_id)}
-                            className="px-3 py-1 rounded bg-green-600 text-white hover:bg-green-700"
-                          >
-                            Approve
-                          </button>
-                          <button
-                            onClick={() => handleReject(leave.leave_id)}
-                            className="px-3 py-1 rounded bg-red-600 text-white hover:bg-red-700"
-                          >
-                            Reject
-                          </button>
-                        </>
-                      )}
-                      {workflow && (
-                        <button
-                          onClick={() => setExpandedWorkflow(expandedWorkflow === leave.leave_id ? null : leave.leave_id)}
-                          className="px-3 py-1 rounded bg-blue-600 text-white hover:bg-blue-700"
-                        >
-                          Workflow
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                  {expandedWorkflow === leave.leave_id && workflow && (
-                    <tr className="border-t bg-gray-50">
-                      <td colSpan="6" className="px-6 py-4">
-                        <div className="space-y-4">
-                          <WorkflowStatusCard workflow={workflow} />
-                          <div>
-                            <h4 className="font-semibold mb-3 text-sm">Approval Steps</h4>
-                            <WorkflowDiagram steps={workflow.steps} compact={true} />
+      <div className="mb-4">
+        <div className="flex space-x-1 bg-gray-100 p-1 rounded-lg w-fit">
+          {[
+            { key: 'all', label: 'All', count: leaves.length },
+            { key: 'pending', label: 'Pending', count: leaves.filter((l) => String(l.status || '').toLowerCase() === 'pending').length },
+            { key: 'approved', label: 'Approved', count: leaves.filter((l) => String(l.status || '').toLowerCase() === 'approved').length },
+            { key: 'rejected', label: 'Rejected', count: leaves.filter((l) => String(l.status || '').toLowerCase() === 'rejected').length }
+          ].map((tab) => (
+            <button
+              key={tab.key}
+              onClick={() => {
+                setFilter(tab.key);
+                setCurrentCardIndex(0);
+              }}
+              className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
+                filter === tab.key ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-600 hover:text-gray-900'
+              }`}
+            >
+              {tab.label} ({tab.count})
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="flex-1 flex overflow-hidden min-h-0">
+        <div className="w-1/2 bg-white border-r rounded-lg">
+          {filteredLeaves.length === 0 ? (
+            <div className="flex items-center justify-center h-full">
+              <div className="text-center">
+                <FiFileText className="mx-auto h-16 w-16 text-gray-400 mb-4" />
+                <h3 className="text-lg font-medium text-gray-900 mb-2">No leave applications</h3>
+                <p className="text-gray-500">
+                  {filter === 'all' ? 'No leave applications have been submitted yet.' : `No ${filter} leave applications found.`}
+                </p>
+              </div>
+            </div>
+          ) : (
+            <div className="h-full flex flex-col">
+              <div className="p-3 border-b bg-gray-50">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center space-x-3">
+                    <button
+                      onClick={() => handleCardSwipe('right')}
+                      disabled={currentCardIndex === 0}
+                      className="p-1.5 rounded-full bg-white shadow hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      <FiChevronLeft className="w-4 h-4" />
+                    </button>
+                    <span className="text-sm text-gray-600">{currentCardIndex + 1} of {filteredLeaves.length}</span>
+                    <button
+                      onClick={() => handleCardSwipe('left')}
+                      disabled={currentCardIndex >= filteredLeaves.length - 1}
+                      className="p-1.5 rounded-full bg-white shadow hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      <FiChevronRight className="w-4 h-4" />
+                    </button>
+                  </div>
+                  <div className="text-xs text-gray-500">Swipe to browse</div>
+                </div>
+              </div>
+
+              <div className="flex-1 p-4">
+                {(() => {
+                  const currentLeave = getCurrentLeave();
+                  if (!currentLeave) return null;
+
+                  return (
+                    <div className="h-full bg-gradient-to-br from-blue-50 to-blue-100 rounded-xl p-6 shadow-lg">
+                      <div className="h-full flex flex-col">
+                        <div className="flex items-center mb-6">
+                          <div className="h-16 w-16 rounded-full bg-[#ffbd59] flex items-center justify-center text-white text-xl font-bold">
+                            {(currentLeave.employee_name || 'E').charAt(0).toUpperCase()}
                           </div>
-                          <div>
-                            <h4 className="font-semibold mb-3 text-sm">History</h4>
-                            <WorkflowTimeline events={workflow.events} steps={workflow.steps} />
+                          <div className="ml-4">
+                            <h3 className="text-xl font-bold text-gray-900">{currentLeave.employee_name || `Employee #${currentLeave.employee_id}`}</h3>
+                            <p className="text-gray-600">Leave Application #{currentLeave.leave_id || currentLeave.id}</p>
                           </div>
                         </div>
-                      </td>
-                    </tr>
-                  )}
-                </React.Fragment>
-              );
-            })}
-          </tbody>
-        </table>
+
+                        <div className="flex-1 space-y-4">
+                          <div className="flex items-center space-x-2">
+                            <span className={`inline-flex items-center px-3 py-1 rounded-full text-sm font-medium ${getStatusColor(currentLeave.status)}`}>
+                              {getStatusIcon(currentLeave.status)}
+                              <span className="ml-1">{currentLeave.status}</span>
+                            </span>
+                          </div>
+
+                          <div className="bg-white rounded-lg p-4 shadow-sm">
+                            <div className="space-y-3">
+                              <div className="flex items-center space-x-2">
+                                <FiCalendar className="w-4 h-4 text-gray-400" />
+                                <div>
+                                  <p className="text-sm text-gray-600">Leave Type</p>
+                                  <p className="font-medium text-gray-900">{currentLeave.leave_type}</p>
+                                </div>
+                              </div>
+                              <div className="flex items-center space-x-2">
+                                <FiCalendar className="w-4 h-4 text-gray-400" />
+                                <div>
+                                  <p className="text-sm text-gray-600">Duration</p>
+                                  <p className="font-medium text-gray-900">
+                                    {new Date(currentLeave.start_date).toLocaleDateString()} - {new Date(currentLeave.end_date).toLocaleDateString()}
+                                  </p>
+                                </div>
+                              </div>
+                              <div className="flex items-center space-x-2">
+                                <FiClock className="w-4 h-4 text-gray-400" />
+                                <div>
+                                  <p className="text-sm text-gray-600">Applied On</p>
+                                  <p className="font-medium text-gray-900">{new Date(currentLeave.requested_at || currentLeave.created_at).toLocaleDateString()}</p>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="mt-6 space-y-3">
+                          <button
+                            onClick={() => handleViewDetails(currentLeave)}
+                            className="w-full flex items-center justify-center space-x-2 px-6 py-3 bg-[#181c52] text-white rounded-lg hover:bg-[#10133a] transition-colors shadow-lg"
+                          >
+                            <FiEye className="w-5 h-5" />
+                            <span>View Full Details</span>
+                          </button>
+
+                          {String(currentLeave.status || '').toLowerCase() === 'pending' && (
+                            <div className="flex space-x-3">
+                              <button
+                                onClick={() => handleApprove(currentLeave.leave_id || currentLeave.id)}
+                                className="flex-1 flex items-center justify-center space-x-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors"
+                              >
+                                <FiCheck className="w-4 h-4" />
+                                <span>Approve</span>
+                              </button>
+                              <button
+                                onClick={() => handleReject(currentLeave.leave_id || currentLeave.id)}
+                                className="flex-1 flex items-center justify-center space-x-2 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors"
+                              >
+                                <FiX className="w-4 h-4" />
+                                <span>Reject</span>
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })()}
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="w-1/2 bg-gray-50 rounded-lg ml-4">
+          {!showDetailsPanel ? (
+            <div className="flex items-center justify-center h-full">
+              <div className="text-center">
+                <FiFileText className="mx-auto h-16 w-16 text-gray-400 mb-4" />
+                <h3 className="text-lg font-medium text-gray-900 mb-2">Select a leave application</h3>
+                <p className="text-gray-500">Click "View Full Details" on a card to see detailed information here.</p>
+              </div>
+            </div>
+          ) : (
+            <div className="h-full flex flex-col">
+              <div className="p-4 bg-white border-b">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h3 className="text-lg font-medium text-gray-900">Leave Application Details</h3>
+                    <p className="text-sm text-gray-500">Application ID: {selectedLeave?.leave_id || selectedLeave?.id}</p>
+                  </div>
+                  <button
+                    onClick={() => setShowDetailsPanel(false)}
+                    className="p-2 text-gray-400 hover:text-gray-600 rounded-full hover:bg-gray-100"
+                  >
+                    <FiX className="w-5 h-5" />
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex-1 overflow-y-auto p-4 space-y-4">
+                {selectedLeave && (
+                  <>
+                    <div className="bg-white rounded-lg p-4 shadow-sm">
+                      <h4 className="text-md font-semibold text-gray-900 mb-3 flex items-center">
+                        <FiUser className="w-5 h-5 mr-2" />
+                        Employee Information
+                      </h4>
+                      <div className="grid grid-cols-1 gap-4">
+                        <div>
+                          <p className="text-sm text-gray-600">Employee Name</p>
+                          <p className="font-medium text-gray-900">{selectedLeave.employee_name || `Employee #${selectedLeave.employee_id}`}</p>
+                        </div>
+                        <div>
+                          <p className="text-sm text-gray-600">Employee ID</p>
+                          <p className="font-medium text-gray-900">{selectedLeave.employee_id}</p>
+                        </div>
+                        <div>
+                          <p className="text-sm text-gray-600">Status</p>
+                          <span className={`inline-flex items-center px-3 py-1 rounded-full text-sm font-medium ${getStatusColor(selectedLeave.status)}`}>
+                            {getStatusIcon(selectedLeave.status)}
+                            <span className="ml-1">{selectedLeave.status}</span>
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="bg-white rounded-lg p-4 shadow-sm">
+                      <h4 className="text-md font-semibold text-gray-900 mb-3 flex items-center">
+                        <FiCalendar className="w-5 h-5 mr-2" />
+                        Leave Details
+                      </h4>
+                      <div className="grid grid-cols-1 gap-4">
+                        <div>
+                          <p className="text-sm text-gray-600">Leave Type</p>
+                          <p className="font-medium text-gray-900">{selectedLeave.leave_type}</p>
+                        </div>
+                        <div>
+                          <p className="text-sm text-gray-600">Start Date</p>
+                          <p className="font-medium text-gray-900">{new Date(selectedLeave.start_date).toLocaleDateString()}</p>
+                        </div>
+                        <div>
+                          <p className="text-sm text-gray-600">End Date</p>
+                          <p className="font-medium text-gray-900">{new Date(selectedLeave.end_date).toLocaleDateString()}</p>
+                        </div>
+                        <div>
+                          <p className="text-sm text-gray-600">Applied On</p>
+                          <p className="font-medium text-gray-900">{new Date(selectedLeave.requested_at || selectedLeave.created_at).toLocaleDateString()}</p>
+                        </div>
+                      </div>
+                    </div>
+
+                    {selectedLeave.notes && (
+                      <div className="bg-white rounded-lg p-6 shadow-sm">
+                        <h4 className="text-lg font-semibold text-gray-900 mb-4 flex items-center">
+                          <FiFileText className="w-5 h-5 mr-2" />
+                          Reason
+                        </h4>
+                        <p className="text-gray-700 leading-relaxed">{selectedLeave.notes}</p>
+                      </div>
+                    )}
+
+                    {String(selectedLeave.status || '').toLowerCase() === 'pending' && (
+                      <div className="bg-white rounded-lg p-4 shadow-sm">
+                        <h4 className="text-md font-semibold text-gray-900 mb-3">Actions</h4>
+                        <div className="flex space-x-4">
+                          <button
+                            onClick={() => {
+                              handleApprove(selectedLeave.leave_id || selectedLeave.id);
+                              setShowDetailsPanel(false);
+                            }}
+                            className="flex-1 flex items-center justify-center space-x-2 px-6 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors"
+                          >
+                            <FiCheck className="w-5 h-5" />
+                            <span>Approve Leave</span>
+                          </button>
+                          <button
+                            onClick={() => {
+                              handleReject(selectedLeave.leave_id || selectedLeave.id);
+                              setShowDetailsPanel(false);
+                            }}
+                            className="flex-1 flex items-center justify-center space-x-2 px-6 py-3 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors"
+                          >
+                            <FiX className="w-5 h-5" />
+                            <span>Reject Leave</span>
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

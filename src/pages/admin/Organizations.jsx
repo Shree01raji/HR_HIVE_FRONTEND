@@ -689,6 +689,9 @@ function CreateOrganizationModal({ onClose, onSuccess }) {
     address: '',
     plan_id: null,
     features_config: {
+      enable_dashboard: false,
+      enable_settings: false,
+      enable_finance: false,
       enable_ai_agents: false,
       enable_learning: false,
       enable_engagement: false,
@@ -1319,6 +1322,9 @@ function EditOrganizationModal({ organization, onClose, onSuccess }) {
         // Only use true if the key exists AND is explicitly true
         const hasBackendConfig = config && Object.keys(config).length > 0;
         setFeaturesConfig({
+          enable_dashboard: hasBackendConfig ? (config.enable_dashboard === true) : false,
+          enable_settings: hasBackendConfig ? (config.enable_settings === true) : false,
+          enable_finance: hasBackendConfig ? (config.enable_finance === true) : false,
           enable_ai_agents: hasBackendConfig ? (config.enable_ai_agents === true) : false,
           enable_learning: hasBackendConfig ? (config.enable_learning === true) : false,
           enable_engagement: hasBackendConfig ? (config.enable_engagement === true) : false,

@@ -36,12 +36,41 @@ export default function EmployeeDashboard() {
   const [todos, setTodos] = useState([]);
   const [managerName, setManagerName] = useState('');
   const [employeeData, setEmployeeData] = useState(null);
+  const [birthdayEmployees, setBirthdayEmployees] = useState([]);
+  const [birthdayWishMessages, setBirthdayWishMessages] = useState([]);
+  const [sendingWishes, setSendingWishes] = useState({});
+  const [wishedEmployees, setWishedEmployees] = useState({});
+  const [wishesHiddenAfterThankYou, setWishesHiddenAfterThankYou] = useState(false);
 
-  const birthdayEmployees = [
-  { id: 1, name: 'Arun Kumar' },
-  { id: 2, name: 'Priya Sharma' },
-  { id: 3, name: 'Rahul Verma' },
-];
+  const getSafeDate = (value) => {
+    if (!value) return null;
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  };
+
+  const normalizeBirthdayEmployees = (birthdays) => {
+    const safeBirthdays = Array.isArray(birthdays) ? birthdays : [];
+    return safeBirthdays.map((employee) => ({
+      id: employee?.id || employee?.employee_id || employee?.user_id,
+      name: employee?.name || `${employee?.first_name || ''} ${employee?.last_name || ''}`.trim() || employee?.email || 'Employee',
+      isSelf: Boolean(employee?.is_self)
+    }));
+  };
+
+  const getBirthdayWishMessages = (notifications) => {
+    const safeNotifications = Array.isArray(notifications) ? notifications : [];
+    return safeNotifications
+      .filter((notification) => {
+        const message = String(notification?.message || '').toLowerCase();
+        return message.includes('birthday') || message.includes('wish');
+      })
+      .slice(0, 5)
+      .map((notification) => ({
+        id: notification?.notification_id,
+        message: notification?.message || 'You have a birthday wish.',
+        createdAt: notification?.created_at
+      }));
+  };
 
   useEffect(() => {
     if (user?.employee_id) {
@@ -93,7 +122,7 @@ export default function EmployeeDashboard() {
       
       console.log('Fetching dashboard data...');
       
-      const [leaves, chats, tasks] = await Promise.all([
+      const [leaves, chats, tasks, birthdays, notifications] = await Promise.all([
         leaveAPI.getMyLeaves().catch((err) => {
           console.error('Error fetching leaves:', err);
           return [];
@@ -105,15 +134,24 @@ export default function EmployeeDashboard() {
         onboardingAPI.getMyTasks().catch((err) => {
           console.error('Error fetching tasks:', err);
           return [];
+        }),
+        employeeAPI.getTodaysBirthdays().catch((err) => {
+          console.error('Error fetching birthdays:', err);
+          return [];
+        }),
+        onboardingAPI.getNotifications().catch((err) => {
+          console.error('Error fetching notifications:', err);
+          return [];
         })
       ]);
 
-      console.log('Dashboard data received:', { leaves, chats, tasks });
+      console.log('Dashboard data received:', { leaves, chats, tasks, birthdays, notifications });
 
       // Ensure all data is arrays before filtering
       const safeLeaves = Array.isArray(leaves) ? leaves : [];
       const safeChats = Array.isArray(chats) ? chats : [];
       const safeTasks = Array.isArray(tasks) ? tasks : [];
+      const safeBirthdays = normalizeBirthdayEmployees(birthdays);
 
       setStats({
         leaveBalance: 20, // Mock data - you can get this from API
@@ -137,6 +175,10 @@ export default function EmployeeDashboard() {
         title: task.title || task.name || 'Task',
         completed: task.status === 'COMPLETED'
       })));
+
+      setBirthdayEmployees(safeBirthdays);
+      setBirthdayWishMessages(getBirthdayWishMessages(notifications));
+      setWishesHiddenAfterThankYou(false);
       
     } catch (err) {
       console.error('Error fetching dashboard data:', err);
@@ -158,6 +200,38 @@ export default function EmployeeDashboard() {
       }
     }
   };
+
+  const handleSendBirthdayWish = async (employee) => {
+    if (!employee?.id || employee?.isSelf || sendingWishes[employee.id] || wishedEmployees[employee.id]) {
+      return;
+    }
+
+    setSendingWishes((prev) => ({ ...prev, [employee.id]: true }));
+    try {
+      const senderName = `${user?.first_name || ''} ${user?.last_name || ''}`.trim() || 'Your teammate';
+      await employeeAPI.sendBirthdayWish(
+        employee.id,
+        `🎉 Happy Birthday ${employee.name}! Best wishes from ${senderName}.`
+      );
+      setWishedEmployees((prev) => ({ ...prev, [employee.id]: true }));
+    } catch (err) {
+      console.error('Error sending birthday wish:', err);
+      setError(err.response?.data?.detail || 'Failed to send birthday wish. Please try again.');
+    } finally {
+      setSendingWishes((prev) => ({ ...prev, [employee.id]: false }));
+    }
+  };
+
+  const handleThankYouAllWishes = () => {
+    setWishesHiddenAfterThankYou(true);
+  };
+
+  const userBirthday = getSafeDate(employeeData?.date_of_birth || user?.date_of_birth);
+  const today = new Date();
+  const isUsersBirthdayToday = Boolean(
+    birthdayEmployees.some((employee) => employee?.isSelf) ||
+    (userBirthday && userBirthday.getDate() === today.getDate() && userBirthday.getMonth() === today.getMonth())
+  );
 
   return (
     <div className="h-full flex flex-col bg-[#e8f0f5]">
@@ -311,24 +385,77 @@ export default function EmployeeDashboard() {
      </div>
 
      {/* Viewport */}
-     <div className="relative w-full h-36 overflow-hidden bg-white">
-      <div className="animate-birthday-scroll h-96" style={{display: 'flex', flexDirection: 'column', willChange: 'transform'}}>
-        {[...birthdayEmployees, ...birthdayEmployees, ...birthdayEmployees].map((emp, idx) => (
+     <div className="w-full bg-white space-y-2">
+      {birthdayEmployees.length > 0 ? (
+        birthdayEmployees.map((emp) => (
           <div
-            key={idx}
-            className="h-16 flex-shrink-0 flex items-center gap-3 bg-pink-50 border border-pink-200 rounded-xl p-2 mb-2"
+            key={emp.id || emp.name}
+            className="h-16 flex items-center gap-3 bg-pink-50 border border-pink-200 rounded-xl p-2"
           >
-        <div className="w-8 h-8 rounded-full bg-pink-500 text-white flex items-center justify-center text-sm font-bold">
-          {emp.name[0]}
+            <div className="w-8 h-8 rounded-full bg-pink-500 text-white flex items-center justify-center text-sm font-bold">
+              {emp.name[0]}
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-semibold truncate">{emp.name}</p>
+              <p className="text-xs">
+                {emp.isSelf ? "🎉 Hey, it's your birthday!" : '🎉 Birthday Today'}
+              </p>
+            </div>
+            {!emp.isSelf && (
+              <button
+                onClick={() => handleSendBirthdayWish(emp)}
+                disabled={sendingWishes[emp.id] || wishedEmployees[emp.id]}
+                className="text-xs bg-pink-500 hover:bg-pink-600 text-white px-2 py-1 rounded-md disabled:opacity-60"
+              >
+                {sendingWishes[emp.id] ? 'Sending...' : wishedEmployees[emp.id] ? 'Wished' : 'Send Wish'}
+              </button>
+            )}
+          </div>
+        ))
+      ) : (
+        <div className="h-16 flex items-center justify-center bg-pink-50 border border-pink-200 rounded-xl p-2">
+          <p className="text-sm text-gray-500">No birthdays today</p>
         </div>
-        <div>
-          <p className="text-sm font-semibold">{emp.name}</p>
-          <p className="text-xs">🎉 Birthday Today</p>
+      )}
+     </div>
+
+     {isUsersBirthdayToday && (
+      <div className="mt-4">
+        <div className="flex items-center justify-between mb-2">
+          <h3 className="text-xs font-bold text-gray-900">Birthday Wishes For You</h3>
+          {birthdayWishMessages.length > 0 && !wishesHiddenAfterThankYou && (
+            <button
+              onClick={handleThankYouAllWishes}
+              className="text-[11px] bg-blue-500 hover:bg-blue-600 text-white px-2 py-1 rounded-md"
+            >
+              Thank You All
+            </button>
+          )}
         </div>
+        {wishesHiddenAfterThankYou ? (
+          <div className="bg-gray-50 border border-gray-200 rounded-lg px-3 py-2">
+            <p className="text-xs text-gray-500">You thanked everyone. Wishes are hidden.</p>
+          </div>
+        ) : birthdayWishMessages.length > 0 ? (
+          <div className="space-y-2">
+            {birthdayWishMessages.map((wish) => (
+              <div key={wish.id || wish.message} className="bg-blue-50 border border-blue-200 rounded-lg px-3 py-2">
+                <p className="text-xs text-gray-700">{wish.message}</p>
+                {wish.createdAt && (
+                  <p className="text-[11px] text-gray-500 mt-1">
+                    {new Date(wish.createdAt).toLocaleString()}
+                  </p>
+                )}
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="bg-gray-50 border border-gray-200 rounded-lg px-3 py-2">
+            <p className="text-xs text-gray-500">No birthday wishes yet.</p>
+          </div>
+        )}
       </div>
-     ))}
-     </div>
-     </div>
+     )}
      </div>
       </div>
       </div>

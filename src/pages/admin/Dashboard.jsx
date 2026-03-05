@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { employeeAPI, leaveAPI, payrollAPI, chatAPI, documentsAPI } from '../../services/api';
+import { employeeAPI, leaveAPI, payrollAPI, chatAPI, documentsAPI, timesheetAPI } from '../../services/api';
 import { useAuth } from '../../contexts/AuthContext';
 import { Link } from 'react-router-dom';
 import { FiUsers, FiCalendar, FiMessageSquare, FiDollarSign, FiUserPlus, FiCheckSquare, FiMonitor, FiClock, FiCheckCircle, FiAlertCircle } from 'react-icons/fi';
@@ -20,7 +20,7 @@ import {
   RadialBar
 } from 'recharts';
 
-function DashboardCard({ title, children }) {
+export function DashboardCard({ title, children }) {
   return (
     <div className="bg-white/80 backdrop-blur-sm rounded-2xl shadow-lg border border-white/20 p-6 h-72">
       <h3 className="text-sm font-semibold text-gray-700 mb-4">
@@ -34,7 +34,7 @@ function DashboardCard({ title, children }) {
 }
 
 
-function AttendanceChart({ data }) {
+export function AttendanceChart({ data }) {
   return (
     <ResponsiveContainer width="100%" height="100%">
       <PieChart>
@@ -62,7 +62,7 @@ function AttendanceChart({ data }) {
 }
 
 
-function LeaveTrendChart({ data }) {
+export function LeaveTrendChart({ data }) {
   return (
     <ResponsiveContainer width="100%" height="100%">
       <LineChart data={data}>
@@ -117,7 +117,7 @@ function LeaveTrendChart({ data }) {
 
 
 
-function DepartmentChart({ data }) {
+export function DepartmentChart({ data }) {
   const colors = ['#6366F1','#22C55E','#F59E0B','#EF4444','#8B5CF6'];
 
   return (
@@ -147,7 +147,7 @@ function DepartmentChart({ data }) {
 
 
 
-function OnboardingChart({ data }) {
+export function OnboardingChart({ data }) {
   return (
     <ResponsiveContainer width="100%" height="100%">
       <BarChart data={data}>
@@ -201,45 +201,190 @@ export default function AdminDashboard() {
   });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [birthdayEmployees, setBirthdayEmployees] = useState([]);
+  const [sendingWishes, setSendingWishes] = useState({});
+  const [wishedEmployees, setWishedEmployees] = useState({});
+  const [attendanceData, setAttendanceData] = useState([
+    { name: "Present", value: 0 },
+    { name: "Absent", value: 0 },
+    { name: "On Leave", value: 0 }
+  ]);
+  const [leaveTrendData, setLeaveTrendData] = useState([]);
+  const [departmentData, setDepartmentData] = useState([]);
+  const [onboardingData, setOnboardingData] = useState([]);
   const { user } = useAuth();
 
-  const birthdayEmployees = [
-  { id: 1, name: 'Arun Kumar' },
-  { id: 2, name: 'Priya Sharma' },
-  { id: 3, name: 'Rahul Verma' },
-];
+const getSafeDate = (value) => {
+  if (!value) return null;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+};
 
-const attendanceData = [
-  { name: "Present", value: 82 },
-  { name: "Absent", value: 10 },
-  { name: "On Leave", value: 8 }
-];
+const getRecentMonthBuckets = (monthsBack = 4) => {
+  const now = new Date();
+  const buckets = [];
+  for (let i = monthsBack - 1; i >= 0; i -= 1) {
+    buckets.push(new Date(now.getFullYear(), now.getMonth() - i, 1));
+  }
+  return buckets;
+};
 
+const getMonthKey = (dateObj) => `${dateObj.getFullYear()}-${String(dateObj.getMonth() + 1).padStart(2, '0')}`;
 
-const leaveTrendData = [
-  { month: "Jan", approved: 8, rejected: 2, pending: 2, total: 12 },
-  { month: "Feb", approved: 12, rejected: 3, pending: 3, total: 18 },
-  { month: "Mar", approved: 6, rejected: 1, pending: 3, total: 10 },
-  { month: "Apr", approved: 15, rejected: 2, pending: 5, total: 22 }
-];
+const buildLeaveTrend = (leaves) => {
+  const monthBuckets = getRecentMonthBuckets(4);
+  const trendMap = monthBuckets.reduce((acc, monthDate) => {
+    const key = getMonthKey(monthDate);
+    acc[key] = {
+      month: monthDate.toLocaleString('en-US', { month: 'short' }),
+      approved: 0,
+      rejected: 0,
+      pending: 0,
+      total: 0,
+    };
+    return acc;
+  }, {});
 
+  leaves.forEach((leave) => {
+    const dateValue = leave?.start_date || leave?.requested_at || leave?.created_at;
+    const leaveDate = getSafeDate(dateValue);
+    if (!leaveDate) return;
 
+    const key = getMonthKey(new Date(leaveDate.getFullYear(), leaveDate.getMonth(), 1));
+    if (!trendMap[key]) return;
 
-const departmentData = [
-  { name: "Finance", value: 12 },
-  { name: "Development", value: 25 },
-  { name: "Design", value: 8 },
-  { name: "HR", value: 15 },
-  { name: "QA", value: 10 }
-];
+    const normalizedStatus = String(leave?.status || '').toUpperCase();
+    if (normalizedStatus.includes('APPROVED')) trendMap[key].approved += 1;
+    else if (normalizedStatus.includes('REJECTED')) trendMap[key].rejected += 1;
+    else trendMap[key].pending += 1;
+    trendMap[key].total += 1;
+  });
 
+  return monthBuckets.map((monthDate) => trendMap[getMonthKey(monthDate)]);
+};
 
-const onboardingData = [
-  { month: "Jan", completed: 15, pending: 5, rejected: 2 },
-  { month: "Feb", completed: 22, pending: 8, rejected: 3 },
-  { month: "Mar", completed: 18, pending: 4, rejected: 1 },
-  { month: "Apr", completed: 25, pending: 6, rejected: 2 }
-];
+const buildDepartmentDistribution = (employees) => {
+  const departmentMap = {};
+  employees.forEach((employee) => {
+    const department = (employee?.department || 'Unassigned').trim() || 'Unassigned';
+    departmentMap[department] = (departmentMap[department] || 0) + 1;
+  });
+
+  return Object.entries(departmentMap)
+    .map(([name, value]) => ({ name, value }))
+    .sort((a, b) => b.value - a.value)
+    .slice(0, 5);
+};
+
+const buildOnboardingTrend = (employees) => {
+  const monthBuckets = getRecentMonthBuckets(4);
+  const trendMap = monthBuckets.reduce((acc, monthDate) => {
+    const key = getMonthKey(monthDate);
+    acc[key] = {
+      month: monthDate.toLocaleString('en-US', { month: 'short' }),
+      completed: 0,
+      pending: 0,
+      rejected: 0,
+    };
+    return acc;
+  }, {});
+
+  employees.forEach((employee) => {
+    const baseDate = getSafeDate(employee?.join_date || employee?.created_at);
+    if (!baseDate) return;
+
+    const key = getMonthKey(new Date(baseDate.getFullYear(), baseDate.getMonth(), 1));
+    if (!trendMap[key]) return;
+
+    const status = String(employee?.status || '').toUpperCase();
+    if (status.includes('TERMINATED') || status.includes('REJECTED')) {
+      trendMap[key].rejected += 1;
+    } else if (employee?.is_onboarded) {
+      trendMap[key].completed += 1;
+    } else {
+      trendMap[key].pending += 1;
+    }
+  });
+
+  return monthBuckets.map((monthDate) => trendMap[getMonthKey(monthDate)]);
+};
+
+const getApprovedLeavesToday = (leaves) => {
+  const now = new Date();
+  return leaves.filter((leave) => {
+    const status = String(leave?.status || '').toUpperCase();
+    if (!status.includes('APPROVED')) return false;
+
+    const startDate = getSafeDate(leave?.start_date);
+    const endDate = getSafeDate(leave?.end_date);
+    if (!startDate || !endDate) return false;
+
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const start = new Date(startDate.getFullYear(), startDate.getMonth(), startDate.getDate());
+    const end = new Date(endDate.getFullYear(), endDate.getMonth(), endDate.getDate());
+    return today >= start && today <= end;
+  }).length;
+};
+
+const getPendingPayrollCount = (payrolls) => payrolls.filter((record) => {
+  const payrollStatus = String(record?.status || '').toUpperCase();
+  const paymentStatus = String(record?.payment_status || '').toUpperCase();
+  if (payrollStatus.includes('REJECTED')) return false;
+  if (payrollStatus.includes('PAID') || paymentStatus.includes('COMPLETED')) return false;
+  return true;
+}).length;
+
+const getTodaysBirthdays = (employees) => {
+  const today = new Date();
+  const todayMonth = today.getMonth() + 1;
+  const todayDate = today.getDate();
+
+  return employees
+    .filter((employee) => {
+      const dob = getSafeDate(employee?.date_of_birth || employee?.dob || employee?.birth_date);
+      if (!dob) return false;
+      const month = dob.getMonth() + 1;
+      const date = dob.getDate();
+      return month === todayMonth && date === todayDate;
+    })
+    .map((employee) => {
+      const firstName = (employee?.first_name || '').trim();
+      const lastName = (employee?.last_name || '').trim();
+      const fullName = `${firstName} ${lastName}`.trim();
+      const employeeId = employee?.employee_id || employee?.id || employee?.user_id;
+
+      return {
+        id: employeeId,
+        name: fullName || employee?.email || 'Employee'
+      };
+    });
+};
+
+const handleSendBirthdayWish = async (employee) => {
+  if (sendingWishes[employee?.id] || wishedEmployees[employee?.id]) {
+    return;
+  }
+
+  if (!employee?.id) {
+    setError('Unable to send wish: employee ID is missing.');
+    return;
+  }
+
+  setSendingWishes((prev) => ({ ...prev, [employee.id]: true }));
+
+  try {
+    await employeeAPI.sendBirthdayWish(
+      employee.id,
+      `🎉 Happy Birthday ${employee.name}! Wishing you a fantastic year ahead from the HR team.`
+    );
+    setWishedEmployees((prev) => ({ ...prev, [employee.id]: true }));
+  } catch (err) {
+    console.error('Error sending birthday wish:', err);
+    setError(err.response?.data?.detail || 'Failed to send birthday wish. Please try again.');
+  } finally {
+    setSendingWishes((prev) => ({ ...prev, [employee.id]: false }));
+  }
+};
 
 
 
@@ -279,7 +424,7 @@ const onboardingData = [
         setError('Organization not selected. Please log out and log back in.');
       }
 
-      const [employees, leaves, sessions, docStats] = await Promise.all([
+      const [employees, leaves, sessions, docStats, payrollRecords, timesheetSummary] = await Promise.all([
         fetchWithTimeout(employeeAPI.getAll()).catch((err) => {
           console.error('[Dashboard] ❌ Error fetching employees:', err);
           console.error('[Dashboard] Error details:', {
@@ -289,8 +434,8 @@ const onboardingData = [
           });
           return [];
         }),
-        fetchWithTimeout(leaveAPI.getPending()).catch((err) => {
-          console.error('[Dashboard] ❌ Error fetching pending leaves:', err);
+        fetchWithTimeout(leaveAPI.getAll()).catch((err) => {
+          console.error('[Dashboard] ❌ Error fetching all leaves:', err);
           console.error('[Dashboard] Error details:', {
             status: err.response?.status,
             data: err.response?.data,
@@ -298,7 +443,7 @@ const onboardingData = [
           });
           return [];
         }),
-        fetchWithTimeout(chatAPI.getSessions()).catch((err) => {
+        fetchWithTimeout(chatAPI.getAdminSessions()).catch((err) => {
           console.error('[Dashboard] ❌ Error fetching chat sessions:', err);
           console.error('[Dashboard] Error details:', {
             status: err.response?.status,
@@ -315,6 +460,24 @@ const onboardingData = [
             message: err.message
           });
           return { verifiedDocuments: 0, pendingVerifications: 0, onboardingInProgress: 0, total_employees: 0 };
+        }),
+        fetchWithTimeout(payrollAPI.getAll()).catch((err) => {
+          console.error('[Dashboard] ❌ Error fetching payroll records:', err);
+          console.error('[Dashboard] Error details:', {
+            status: err.response?.status,
+            data: err.response?.data,
+            message: err.message
+          });
+          return [];
+        }),
+        fetchWithTimeout(timesheetAPI.getTimesheetSummary()).catch((err) => {
+          console.error('[Dashboard] ❌ Error fetching timesheet summary:', err);
+          console.error('[Dashboard] Error details:', {
+            status: err.response?.status,
+            data: err.response?.data,
+            message: err.message
+          });
+          return { overview: {} };
         })
       ]);
 
@@ -322,7 +485,8 @@ const onboardingData = [
         employees: employees?.length || 0,
         leaves: leaves?.length || 0,
         sessions: sessions?.length || 0,
-        docStats: docStats
+        docStats: docStats,
+        payrollRecords: payrollRecords?.length || 0
       });
       
       // Log detailed response data for debugging
@@ -330,7 +494,8 @@ const onboardingData = [
         employees: employees,
         leaves: leaves,
         sessions: sessions,
-        docStats: docStats
+        docStats: docStats,
+        payrollRecords: payrollRecords
       });
       
       // Check if all data is empty
@@ -348,16 +513,36 @@ const onboardingData = [
       const safeEmployees = Array.isArray(employees) ? employees : [];
       const safeLeaves = Array.isArray(leaves) ? leaves : [];
       const safeSessions = Array.isArray(sessions) ? sessions : [];
+      const safePayroll = Array.isArray(payrollRecords) ? payrollRecords : [];
+
+      const approvedLeavesToday = getApprovedLeavesToday(safeLeaves);
+      const totalEmployees = safeEmployees.length;
+      const currentlyWorking = Number(timesheetSummary?.overview?.currently_working || 0);
+      const presentCount = Math.min(currentlyWorking, totalEmployees);
+      const onLeaveCount = Math.min(approvedLeavesToday, Math.max(totalEmployees - presentCount, 0));
+      const absentCount = Math.max(totalEmployees - presentCount - onLeaveCount, 0);
+
+      const toPercent = (value) => (totalEmployees > 0 ? Math.round((value / totalEmployees) * 100) : 0);
 
       setStats({
-        totalEmployees: safeEmployees.length,
-        pendingLeaves: safeLeaves.length,
+        totalEmployees,
+        pendingLeaves: safeLeaves.filter((leave) => String(leave?.status || '').toUpperCase().includes('PENDING')).length,
         activeChatSessions: safeSessions.length,
-        pendingPayroll: 0,
+        pendingPayroll: getPendingPayrollCount(safePayroll),
         verifiedDocuments: docStats?.verified_documents || 0,
         pendingVerifications: docStats?.pending_verifications || 0,
         onboardingInProgress: docStats?.onboarding_in_progress || 0
       });
+
+      setBirthdayEmployees(getTodaysBirthdays(safeEmployees));
+      setAttendanceData([
+        { name: "Present", value: toPercent(presentCount) },
+        { name: "Absent", value: toPercent(absentCount) },
+        { name: "On Leave", value: toPercent(onLeaveCount) }
+      ]);
+      setLeaveTrendData(buildLeaveTrend(safeLeaves));
+      setDepartmentData(buildDepartmentDistribution(safeEmployees));
+      setOnboardingData(buildOnboardingTrend(safeEmployees));
     } catch (err) {
       console.error('Error fetching dashboard data:', err);
       setError(
@@ -459,7 +644,7 @@ const onboardingData = [
               icon={<FiUsers className="w-5 h-5" />}
               loading={loading}
               color={isDepartmentHR ? "bg-gray-500" : "bg-blue-500"}
-              // trend="+5%"
+              trend="Live"
             />
             <StatCard
               title="Pending Leaves"
@@ -467,7 +652,7 @@ const onboardingData = [
               icon={<FiCalendar className="w-5 h-5" />}
               loading={loading}
               color="bg-yellow-500"
-              // trend="3 urgent"
+              trend="Live"
             />
             {/* <StatCard
               title="Active Chats"
@@ -499,7 +684,7 @@ const onboardingData = [
               icon={<FiAlertCircle className="w-5 h-5" />}
               loading={loading}
               color="bg-yellow-500"
-              // trend="Needs review"
+              trend="Live"
             />
             <StatCard
               title="⏳ Onboarding in Progress"
@@ -507,7 +692,7 @@ const onboardingData = [
               icon={<FiClock className="w-5 h-5" />}
               loading={loading}
               color="bg-blue-500"
-              // trend="Active"
+              trend="Live"
             />
           </div>
         </div>
@@ -565,23 +750,38 @@ const onboardingData = [
      </div>
 
      {/* Viewport */}
-     <div className="relative w-full h-36 overflow-hidden bg-white">
-      <div className="animate-birthday-scroll h-96" style={{display: 'flex', flexDirection: 'column', willChange: 'transform'}}>
-        {[...birthdayEmployees, ...birthdayEmployees, ...birthdayEmployees].map((emp, idx) => (
-          <div
-            key={idx}
-            className="h-16 flex-shrink-0 flex items-center gap-3 bg-pink-50 border border-pink-200 rounded-xl p-2 mb-2"
-          >
-        <div className="w-8 h-8 rounded-full bg-pink-500 text-white flex items-center justify-center text-sm font-bold">
-          {emp.name[0]}
+     <div className="w-full bg-white space-y-2">
+      {birthdayEmployees.length > 0 ? (
+        <div className="space-y-2">
+          {birthdayEmployees.map((emp) => (
+            <div
+              key={emp.id || emp.name}
+              className="h-16 flex-shrink-0 flex items-center justify-between gap-3 bg-pink-50 border border-pink-200 rounded-xl p-2 mb-2"
+            >
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="w-8 h-8 rounded-full bg-pink-500 text-white flex items-center justify-center text-sm font-bold">
+                  {emp.name[0]}
+                </div>
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold truncate">{emp.name}</p>
+                  <p className="text-xs">🎉 Birthday Today</p>
+                </div>
+              </div>
+              <button
+                onClick={() => handleSendBirthdayWish(emp)}
+                disabled={!emp.id || sendingWishes[emp.id] || wishedEmployees[emp.id]}
+                className="text-xs px-2 py-1 rounded-md bg-blue-600 text-white hover:bg-blue-700 disabled:bg-gray-300 disabled:text-gray-600 disabled:cursor-not-allowed"
+              >
+                {sendingWishes[emp.id] ? 'Sending...' : wishedEmployees[emp.id] ? 'Wished' : 'Send Wish'}
+              </button>
+            </div>
+          ))}
         </div>
-        <div>
-          <p className="text-sm font-semibold">{emp.name}</p>
-          <p className="text-xs">🎉 Birthday Today</p>
+      ) : (
+        <div className="h-full flex items-center justify-center">
+          <p className="text-sm text-gray-500">No birthdays today</p>
         </div>
-      </div>
-     ))}
-     </div>
+      )}
      </div>
      </div>
       </div>
@@ -613,7 +813,7 @@ const onboardingData = [
 
 
 
-function StatCard({ title, value, icon, loading, color, trend }) {
+export function StatCard({ title, value, icon, loading, color, trend }) {
   const colorClasses = {
     'bg-blue-500': 'from-violet-500 to-violet-600',
     'bg-gray-500': 'from-gray-500 to-gray-600',
@@ -649,7 +849,7 @@ function StatCard({ title, value, icon, loading, color, trend }) {
 }
 
   
-function QuickActionCard({ title, description, icon, link, isDepartmentHR = false }) {
+export function QuickActionCard({ title, description, icon, link, isDepartmentHR = false }) {
   return (
     <Link
       to={link}
@@ -677,5 +877,6 @@ function QuickActionCard({ title, description, icon, link, isDepartmentHR = fals
     </Link>
   );
 }
+
 
 

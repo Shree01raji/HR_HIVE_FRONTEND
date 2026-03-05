@@ -10,6 +10,9 @@ export const useFeatureToggle = () => {
       // Return default enabled features if context is not available (graceful degradation)
     return {
       features: {
+        enable_dashboard: true,
+        enable_settings: true,
+        enable_finance: true,
         enable_ai_agents: true,
         enable_learning: true,
         enable_engagement: true,
@@ -49,6 +52,9 @@ export const FeatureToggleProvider = ({ children }) => {
 
   // Default features (all enabled by default) - use useMemo to avoid recreating on every render
   const defaultFeatures = useMemo(() => ({
+    enable_dashboard: true,
+    enable_settings: true,
+    enable_finance: true,
     enable_ai_agents: true,
     enable_learning: true,
     enable_engagement: true,
@@ -96,15 +102,25 @@ export const FeatureToggleProvider = ({ children }) => {
       // Store the original backend config to check key existence
       setBackendFeaturesConfig(featuresConfig);
 
-      // Merge backend config with defaults. IMPORTANT: missing keys in backend
-      // should NOT implicitly disable a feature. We override defaults only for
-      // keys explicitly present in backend config.
-      const mergedFeatures = { ...defaultFeatures };
-      Object.keys(featuresConfig).forEach(key => {
-        if (key in mergedFeatures) {
-          mergedFeatures[key] = featuresConfig[key] === true;
-        }
-      });
+      // Merge backend config with defaults.
+      // If backend provides a non-empty config, treat it as authoritative:
+      // - Keys present in backend config use the backend value (true/false)
+      // - Keys missing from backend config are treated as DISABLED (false)
+      const hasBackendConfig = featuresConfig && Object.keys(featuresConfig).length > 0;
+      let mergedFeatures;
+      if (hasBackendConfig) {
+        mergedFeatures = Object.keys(defaultFeatures).reduce((acc, key) => {
+          acc[key] = false;
+          return acc;
+        }, {});
+        Object.keys(featuresConfig).forEach(key => {
+          if (key in mergedFeatures) {
+            mergedFeatures[key] = featuresConfig[key] === true;
+          }
+        });
+      } else {
+        mergedFeatures = { ...defaultFeatures };
+      }
       
       console.log('📋 Feature toggles loaded from backend:', featuresConfig);
       console.log('📋 Backend config keys:', Object.keys(featuresConfig));
@@ -190,16 +206,17 @@ export const FeatureToggleProvider = ({ children }) => {
     const hasBackendConfig = backendFeaturesConfig && Object.keys(backendFeaturesConfig).length > 0;
     
     if (hasBackendConfig) {
-      // If backend provided an explicit value for this key, use it.
-      // Otherwise, default to enabled (true) so missing keys don't disable features.
+      // Authoritative backend mode: if backend provided a config (non-empty),
+      // then only keys explicitly present and true are enabled. Missing keys
+      // are disabled.
       if (Object.prototype.hasOwnProperty.call(backendFeaturesConfig, featureKey)) {
         const backendValue = backendFeaturesConfig[featureKey];
         const isEnabledResult = backendValue === true;
         console.log(`🔍 [isEnabled] ${featureKey}: backend has explicit config, value=${backendValue}, result=${isEnabledResult}`);
         return isEnabledResult;
       }
-      console.log(`🔍 [isEnabled] ${featureKey}: backend config present but key missing, defaulting to true`);
-      return true;
+      console.log(`🔍 [isEnabled] ${featureKey}: backend has config but key is missing -> disabled`);
+      return false;
     }
     
     // If key doesn't exist in backend config, check merged features

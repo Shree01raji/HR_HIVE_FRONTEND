@@ -4,7 +4,7 @@ import { employeeAPI, documentsAPI } from '../../services/api';
 import { 
   FiArrowLeft, FiUser, FiMail, FiPhone, FiMapPin, FiBriefcase, 
   FiCalendar, FiFileText, FiCheckCircle, FiXCircle, FiClock, 
-  FiEye, FiDownload, FiEdit, FiAlertCircle, FiX, FiCreditCard
+  FiEye, FiDownload, FiEdit, FiAlertCircle, FiX, FiCreditCard, FiLock
 } from 'react-icons/fi';
 
 export default function EmployeeDetail() {
@@ -20,6 +20,9 @@ export default function EmployeeDetail() {
   const [rejectModal, setRejectModal] = useState({ show: false, document: null, reason: '' });
   const [processingDocId, setProcessingDocId] = useState(null);
   const [processingAction, setProcessingAction] = useState(null);
+  const [provisioningAccess, setProvisioningAccess] = useState(false);
+  const [tempPasswordInput, setTempPasswordInput] = useState('');
+  const [accessProvisionResult, setAccessProvisionResult] = useState(null);
 
   const formatRole = (role) => {
     if (!role) return '—';
@@ -128,6 +131,27 @@ export default function EmployeeDetail() {
     } finally {
       setProcessingDocId(null);
       setProcessingAction(null);
+    }
+  };
+
+  const handleProvisionAccess = async () => {
+    try {
+      setProvisioningAccess(true);
+      setError(null);
+      setAccessProvisionResult(null);
+
+      const payload = {
+        password: tempPasswordInput.trim() || null,
+      };
+
+      const response = await employeeAPI.provisionAccess(parseInt(employeeId, 10), payload);
+      setAccessProvisionResult(response);
+      setTempPasswordInput('');
+    } catch (err) {
+      console.error('Error provisioning employee access:', err);
+      setError(err.response?.data?.detail || err.message || 'Failed to provision employee access');
+    } finally {
+      setProvisioningAccess(false);
     }
   };
 
@@ -268,6 +292,41 @@ export default function EmployeeDetail() {
                 </div>
               </div>
             </div>
+          </div>
+
+          <div className="bg-white rounded-lg shadow p-6">
+            <h2 className="text-lg font-semibold text-gray-900 mb-4 flex items-center space-x-2">
+              <FiLock className="w-5 h-5" />
+              <span>Portal Access</span>
+            </h2>
+            <p className="text-sm text-gray-600 mb-4">
+              Set or reset a temporary password for this existing employee. They will be forced to reset it on first login.
+            </p>
+            <label className="block text-sm text-gray-600 mb-2">Temporary Password (optional)</label>
+            <input
+              type="text"
+              value={tempPasswordInput}
+              onChange={(e) => setTempPasswordInput(e.target.value)}
+              placeholder="Leave blank to auto-generate"
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+            />
+            <button
+              onClick={handleProvisionAccess}
+              disabled={provisioningAccess}
+              className="mt-3 w-full px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-60"
+            >
+              {provisioningAccess ? 'Provisioning Access...' : 'Send Temporary Password'}
+            </button>
+
+            {accessProvisionResult && (
+              <div className="mt-4 p-3 rounded-lg border border-green-200 bg-green-50 text-sm text-green-800">
+                <p className="font-medium">{accessProvisionResult.message}</p>
+                <p className="mt-1">Login Email: {accessProvisionResult.login_email}</p>
+                <p>Temporary Password: {accessProvisionResult.temporary_password}</p>
+                {accessProvisionResult.company_code && <p>Company Code: {accessProvisionResult.company_code}</p>}
+                <p className="mt-1">Email sent: {accessProvisionResult.email_sent ? 'Yes' : 'No (share credentials manually)'}</p>
+              </div>
+            )}
           </div>
 
           {/* Job Details */}
@@ -586,4 +645,5 @@ export default function EmployeeDetail() {
     </div>
   );
 }
+
 

@@ -14,14 +14,17 @@ export default function LeaveManagement() {
   const [selectedPolicy, setSelectedPolicy] = useState(null);
   const [showPolicyModal, setShowPolicyModal] = useState(false);
   const [loadingPolicy, setLoadingPolicy] = useState(false);
+  const [policyMessage, setPolicyMessage] = useState(null);
   const [workflows, setWorkflows] = useState({});
   const [expandedWorkflow, setExpandedWorkflow] = useState(null);
+
+  const normalizeLeaveType = (value) => String(value || '').trim().toLowerCase();
 
   useEffect(() => {
     fetchLeaveConfig();
   }, []);
 
-  const fetchLeaveConfig = async () => {
+  const fetchLeaveConfig = useCallback(async () => {
     try {
       console.log('Fetching leave configuration from settings...');
       // Use the employee-accessible endpoint
@@ -58,7 +61,7 @@ export default function LeaveManagement() {
       setLeaveConfig({}); // Empty config to prevent calculation
       setLoading(false);
     }
-  };
+  }, []);
 
   const fetchLeaveData = useCallback(async () => {
     try {
@@ -220,16 +223,16 @@ export default function LeaveManagement() {
     }
   }, [leaveConfig, fetchLeaveData]);
 
-  // Auto-refresh: poll periodically and refresh when the tab becomes visible.
+  // Auto-refresh: poll periodically and refresh leave config when the tab becomes visible.
   useEffect(() => {
-    // Poll every 30s to pick up admin-side changes.
+    // Poll every 30s to pick up admin-side leave configuration changes.
     const interval = setInterval(() => {
-      if (!loading) fetchLeaveData();
+      if (!loading) fetchLeaveConfig();
     }, 30000);
 
     const handleVisibility = () => {
       if (document.visibilityState === 'visible') {
-        fetchLeaveData();
+        fetchLeaveConfig();
       }
     };
 
@@ -239,14 +242,36 @@ export default function LeaveManagement() {
       clearInterval(interval);
       document.removeEventListener('visibilitychange', handleVisibility);
     };
-  }, [fetchLeaveData, loading]);
+  }, [fetchLeaveConfig, loading]);
+
+  useEffect(() => {
+    const handleSettingsUpdate = (event) => {
+      if (event?.detail?.type === 'settings_update') {
+        fetchLeaveConfig();
+      }
+    };
+
+    window.addEventListener('settings-update', handleSettingsUpdate);
+
+    return () => {
+      window.removeEventListener('settings-update', handleSettingsUpdate);
+    };
+  }, [fetchLeaveConfig]);
 
   const handleViewPolicy = async (leaveType) => {
     try {
       setLoadingPolicy(true);
-      setError(null);
+      setPolicyMessage(null);
       // Fetch policies filtered by leave type
-      const policies = await leavePolicyAPI.getPolicies(true, leaveType);
+      let policies = await leavePolicyAPI.getPolicies(true, leaveType);
+
+      if (!Array.isArray(policies) || policies.length === 0) {
+        const allActivePolicies = await leavePolicyAPI.getPolicies(true);
+        const normalizedType = normalizeLeaveType(leaveType);
+        policies = (Array.isArray(allActivePolicies) ? allActivePolicies : []).filter(
+          (policy) => normalizeLeaveType(policy?.leave_type) === normalizedType
+        );
+      }
       
       if (policies && policies.length > 0) {
         // Find the most relevant policy (usually the first one or the most recent)
@@ -254,11 +279,11 @@ export default function LeaveManagement() {
         setSelectedPolicy(policy);
         setShowPolicyModal(true);
       } else {
-        setError(`No policy found for ${leaveType}. Please contact HR for more information.`);
+        setPolicyMessage(`No policy found for ${leaveType}. Please contact HR for more information.`);
       }
     } catch (err) {
       console.error('Error fetching policy:', err);
-      setError(`Failed to load policy for ${leaveType}. Please try again later.`);
+      setPolicyMessage(`Failed to load policy for ${leaveType}. Please try again later.`);
     } finally {
       setLoadingPolicy(false);
     }
@@ -380,11 +405,29 @@ export default function LeaveManagement() {
         </div>
       )}
 
+      {policyMessage && (
+        <div className="bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-lg p-4">
+          <div className="flex items-center justify-between">
+            <p className="text-sm text-yellow-800 dark:text-yellow-300">{policyMessage}</p>
+            <button
+              onClick={() => setPolicyMessage(null)}
+              className="text-xs px-3 py-1 rounded bg-yellow-100 dark:bg-yellow-800/40 text-yellow-800 dark:text-yellow-200 hover:bg-yellow-200 dark:hover:bg-yellow-800/60"
+            >
+              Dismiss
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Leave Balance Cards */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        {Object.entries(leaveBalance).map(([type, days]) => (
-          <div 
-            key={type} 
+        {Object.entries(leaveConfig || {}).map(([type, totalAllowed]) => {
+          const remaining = leaveBalance[type] ?? totalAllowed;
+          const taken = Math.max(0, (totalAllowed || 0) - (remaining || 0));
+
+          return (
+          <div
+            key={type}
             onClick={() => handleViewPolicy(type)}
             className="bg-white dark:bg-gray-800 shadow rounded-lg p-6 cursor-pointer hover:shadow-lg transition-shadow hover:border-teal-500 border-2 border-transparent"
           >
@@ -392,11 +435,19 @@ export default function LeaveManagement() {
               <h3 className="text-lg font-semibold dark:text-white">{type}</h3>
               <FiInfo className="w-5 h-5 text-teal-600 dark:text-teal-400" title="Click to view policy details" />
             </div>
-            <div className="text-3xl font-bold text-blue-600 dark:text-blue-400">{days}</div>
-            <p className="text-gray-600 dark:text-gray-400 mt-1">days remaining</p>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <p className="text-xs text-gray-600 dark:text-gray-400 uppercase">Taken</p>
+                <div className="text-2xl font-bold text-red-600 dark:text-red-400">{taken}</div>
+              </div>
+              <div>
+                <p className="text-xs text-gray-600 dark:text-gray-400 uppercase">Remaining</p>
+                <div className="text-2xl font-bold text-blue-600 dark:text-blue-400">{remaining}</div>
+              </div>
+            </div>
             <p className="text-xs text-teal-600 dark:text-teal-400 mt-2 font-medium">Click to view policy →</p>
           </div>
-        ))}
+        )})}
       </div>
 
       {/* Leave History */}

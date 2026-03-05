@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { FiSettings, FiPlus, FiEdit, FiTrash2, FiUsers, FiEye, FiX } from 'react-icons/fi';
-import { leavePolicyAPI, employeeAPI } from '../../services/api';
+import api, { leavePolicyAPI, employeeAPI } from '../../services/api';
+
+const FALLBACK_LEAVE_TYPES = ['Paid Leave', 'Sick Leave', 'Maternity', 'Unpaid Leave'];
 
 export default function LeavePolicies() {
   const [policies, setPolicies] = useState([]);
@@ -13,6 +15,7 @@ export default function LeavePolicies() {
   const [showViewModal, setShowViewModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [configuredLeaveTypes, setConfiguredLeaveTypes] = useState(FALLBACK_LEAVE_TYPES);
   const [formData, setFormData] = useState({
     policy_name: '',
     description: '',
@@ -35,12 +38,27 @@ export default function LeavePolicies() {
   const fetchData = async () => {
     try {
       setLoading(true);
-      const [policiesData, employeesData] = await Promise.all([
+      const [policiesData, employeesData, leaveConfigResponse] = await Promise.all([
         leavePolicyAPI.getPolicies(),
-        employeeAPI.getAll()
+        employeeAPI.getAll(),
+        api.get('/settings/leave-config').catch(() => ({ data: { leave_config: {} } }))
       ]);
-      setPolicies(Array.isArray(policiesData) ? policiesData : []);
+
+      const leaveConfig = leaveConfigResponse?.data?.leave_config || {};
+      const leaveTypesFromConfig = Object.keys(leaveConfig);
+      const availableLeaveTypes = leaveTypesFromConfig.length > 0 ? leaveTypesFromConfig : FALLBACK_LEAVE_TYPES;
+
+      const safePolicies = Array.isArray(policiesData) ? policiesData : [];
+      const filteredPolicies = safePolicies.filter((policy) => availableLeaveTypes.includes(policy?.leave_type));
+
+      setConfiguredLeaveTypes(availableLeaveTypes);
+      setPolicies(filteredPolicies);
       setEmployees(Array.isArray(employeesData) ? employeesData : []);
+
+      setFormData((prev) => ({
+        ...prev,
+        leave_type: availableLeaveTypes.includes(prev.leave_type) ? prev.leave_type : availableLeaveTypes[0]
+      }));
     } catch (err) {
       console.error('Error fetching data:', err);
       setError('Failed to load leave policies');
@@ -95,7 +113,7 @@ export default function LeavePolicies() {
       setFormData({
         policy_name: '',
         description: '',
-        leave_type: 'Paid Leave',
+        leave_type: configuredLeaveTypes[0] || FALLBACK_LEAVE_TYPES[0],
         default_days_per_year: 12,
         max_carry_forward_days: 0,
         carry_forward_allowed: false,
@@ -218,7 +236,7 @@ export default function LeavePolicies() {
       setFormData({
         policy_name: '',
         description: '',
-        leave_type: 'Paid Leave',
+        leave_type: configuredLeaveTypes[0] || FALLBACK_LEAVE_TYPES[0],
         default_days_per_year: 12,
         max_carry_forward_days: 0,
         carry_forward_allowed: false,
@@ -303,10 +321,9 @@ export default function LeavePolicies() {
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Leave Type *</label>
                 <select name="leave_type" value={formData.leave_type} onChange={handleInputChange} className="w-full px-3 py-2 border rounded-lg" required>
-                  <option value="Paid Leave">Paid Leave</option>
-                  <option value="Sick Leave">Sick Leave</option>
-                  <option value="Maternity">Maternity</option>
-                  <option value="Unpaid Leave">Unpaid Leave</option>
+                  {configuredLeaveTypes.map((leaveType) => (
+                    <option key={leaveType} value={leaveType}>{leaveType}</option>
+                  ))}
                 </select>
               </div>
               <div>
@@ -579,10 +596,9 @@ export default function LeavePolicies() {
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Leave Type *</label>
                   <select name="leave_type" value={formData.leave_type} onChange={handleInputChange} className="w-full px-3 py-2 border rounded-lg" required>
-                    <option value="Paid Leave">Paid Leave</option>
-                    <option value="Sick Leave">Sick Leave</option>
-                    <option value="Maternity">Maternity</option>
-                    <option value="Unpaid Leave">Unpaid Leave</option>
+                    {configuredLeaveTypes.map((leaveType) => (
+                      <option key={leaveType} value={leaveType}>{leaveType}</option>
+                    ))}
                   </select>
                 </div>
                 <div>

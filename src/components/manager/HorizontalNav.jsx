@@ -107,17 +107,17 @@ export default function HorizontalNav() {
       </nav>
  
       {menuOpen && (
-        <div className="fixed inset-0 z-50 bg-black/40" onClick={() => setMenuOpen(false)}>
+        <div className="fixed inset-0 z-50 bg-black/50" onClick={() => setMenuOpen(false)}>
           <div
-            className="absolute left-0 top-0 bottom-0 w-72 bg-white shadow-xl p-4"
+            className="absolute left-0 top-0 bottom-0 w-72 bg-[#1e3a5f] text-white shadow-xl p-4"
             onClick={(event) => event.stopPropagation()}
           >
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-lg font-semibold text-gray-800">Manager Menu</h2>
+            <div className="flex items-center justify-between mb-4 border-b border-gray-600/50 pb-3">
+              <h2 className="text-lg font-semibold text-white">Manager Menu</h2>
               <button
                 type="button"
                 onClick={() => setMenuOpen(false)}
-                className="p-2 rounded-lg text-gray-600 hover:bg-gray-100"
+                className="p-2 rounded-lg text-white hover:bg-white/10"
                 aria-label="Close menu"
               >
                 <FiX className="w-5 h-5" />
@@ -133,7 +133,7 @@ export default function HorizontalNav() {
                     to={item.path}
                     onClick={() => setMenuOpen(false)}
                     className={`flex items-center space-x-3 px-3 py-2 rounded-lg transition-colors ${
-                      isActive ? 'bg-[#1e3a5f] text-white' : 'text-gray-700 hover:bg-gray-100'
+                      isActive ? 'bg-yellow-400 text-gray-900' : 'text-gray-300 hover:bg-gray-700/50 hover:text-white'
                     }`}
                   >
                     <Icon className="w-4 h-4" />

@@ -319,6 +319,7 @@ const toggleSection = (key) => {
       '/admin/branches': null, // Branches - always enabled
       '/admin/timesheet': 'enable_timesheet', // Timesheet
       '/admin/realtime-dashboard': 'enable_timesheet', // Real-Time Dashboard (uses timesheet feature)
+      '/admin/assets': 'enable_payroll', // Assets (finance module under payroll)
     };
     return featureMap[path];
   };
@@ -333,6 +334,10 @@ const toggleSection = (key) => {
     }
     
     const isAdmin = userRole === 'ADMIN' || userRole === 'HR_ADMIN';
+
+    if (userRole === 'ORG_ADMIN') {
+      return menuItems.filter(item => item.path === '/admin/branches');
+    }
     
     // For department HR managers, show only these 8 tabs + Dashboard
     if (isDepartmentHR) {

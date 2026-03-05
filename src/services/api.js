@@ -610,6 +610,20 @@ export const employeeAPI = {
     });
     return response.data;
   },
+  getTodaysBirthdays: async () => {
+    const response = await api.get('/employees/birthdays/today');
+    return response.data;
+  },
+  sendBirthdayWish: async (employeeId, message) => {
+    const response = await api.post(`/employees/${employeeId}/birthday-wish`, {
+      message,
+    });
+    return response.data;
+  },
+  provisionAccess: async (employeeId,payload = {}) => {  
+    const response = await api.post(`/employees/${employeeId}/provision-access`,payload);
+    return response.data;
+  },
 };
 
 // Leave API
@@ -3037,6 +3051,10 @@ export const managerAPI = {
   },
   getTeamChatMessages: async (userId, sessionId) => {
     const response = await api.get(`/agents/manager/sessions/${userId}/${sessionId}/messages`);
+    return response.data;
+  },
+  sendBirthdayWish: async (employeeId, message) => {
+    const response = await api.post(`/employees/${employeeId}/birthday-wish`, { message });
     return response.data;
   }
 };
