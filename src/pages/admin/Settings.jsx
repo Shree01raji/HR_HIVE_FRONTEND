@@ -1,4 +1,4 @@
-import React, { useState, useEffect ,useMemo} from 'react';
+import React, { useState, useEffect ,useMemo, useRef} from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
 import { useRealTime } from '../../contexts/RealTimeContext';
@@ -34,6 +34,66 @@ import ConnectionStatus from '../../components/ConnectionStatus';
 import { Link } from 'react-router-dom';
 
 export default function Settings() {
+  const leaveConfigSaveRequestRef = useRef(0);
+
+  const parseJsonLike = (value) => {
+    if (value == null) return null;
+    if (typeof value === 'object') return value;
+    if (typeof value === 'string') {
+      try {
+        return JSON.parse(value);
+      } catch {
+        try {
+          // Handle Python-style dict/list strings (single quotes, True/False/None).
+          const normalized = value
+            .replace(/\bNone\b/g, 'null')
+            .replace(/\bTrue\b/g, 'true')
+            .replace(/\bFalse\b/g, 'false')
+            .replace(/'/g, '"');
+          return JSON.parse(normalized);
+        } catch {
+          return null;
+        }
+      }
+    }
+    return null;
+  };
+
+  const normalizeLeaveConfig = (config) => {
+    if (!config || typeof config !== 'object') return {};
+    return Object.entries(config).reduce((acc, [key, rawValue]) => {
+      const leaveType = String(key || '').trim();
+      if (!leaveType) return acc;
+      const parsed = Number(rawValue);
+      acc[leaveType] = Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+      return acc;
+    }, {});
+  };
+
+  const getLeaveConfigCacheKey = () => {
+    const org = localStorage.getItem('selectedOrganization') || 'default';
+    return `leave_config_cache:${org}`;
+  };
+
+  const persistLeaveConfigCache = (config) => {
+    try {
+      const normalized = normalizeLeaveConfig(config);
+      localStorage.setItem(getLeaveConfigCacheKey(), JSON.stringify(normalized));
+    } catch (e) {
+      console.warn('Failed to persist leave config cache', e);
+    }
+  };
+
+  const readLeaveConfigCache = () => {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(getLeaveConfigCacheKey()) || '{}');
+      return normalizeLeaveConfig(parsed);
+    } catch (e) {
+      console.warn('Failed to read leave config cache', e);
+      return {};
+    }
+  };
+
   // Fetch calendar events for admin calendar/leave modal
     const fetchEvents = async () => {
       try {
@@ -50,6 +110,7 @@ export default function Settings() {
   
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [savingLeaveConfig, setSavingLeaveConfig] = useState(false);
   const [settings, setSettings] = useState(null);
   const [error, setError] = useState(null);
   const [success, setSuccess] = useState(null);
@@ -332,16 +393,28 @@ const [showConfiguredList, setShowConfiguredList] = useState(true);
         const isLeave = et === 'leave' || et === 'holiday' || hasLeaveType;
         return isLeave;
       });
-      console.debug('[Settings] fetched configured leaves count=', events.length, 'raw=', res, 'parsed=', events);
-      setConfiguredLeaves(events);
+
+      // Merge locally-created fallback entries when create endpoint is unavailable.
+      const createdFallback = getClientCreatedEvents();
+      const dedupMap = new Map();
+      [...events, ...createdFallback].forEach((eventItem) => {
+        const key = String(eventItem?.event_id || eventItem?.id || `${eventItem?.title || 'leave'}-${eventItem?.start_date || ''}`);
+        dedupMap.set(key, eventItem);
+      });
+      const mergedEvents = Array.from(dedupMap.values());
+
+      console.debug('[Settings] fetched configured leaves count=', mergedEvents.length, 'raw=', res, 'parsed=', mergedEvents);
+      setConfiguredLeaves(mergedEvents);
     } catch (err) {
       console.error('Failed to fetch leave configuration events:', err);
+      setConfiguredLeaves(getClientCreatedEvents());
     }
   };
 
   // Local client-side fallback storage for deletes/edits when backend fails
   const CLIENT_DELETED_KEY = 'client_deleted_calendar_event_ids';
   const CLIENT_EDIT_KEY = 'client_edited_calendar_events';
+  const CLIENT_CREATED_KEY = 'client_created_calendar_events';
 
   const getClientDeletedIds = () => {
     try { return JSON.parse(localStorage.getItem(CLIENT_DELETED_KEY) || '[]'); } catch { return []; }
@@ -359,6 +432,38 @@ const [showConfiguredList, setShowConfiguredList] = useState(true);
     const edits = getClientEdits();
     edits[String(id)] = data;
     localStorage.setItem(CLIENT_EDIT_KEY, JSON.stringify(edits));
+  };
+
+  const getClientCreatedEvents = () => {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(CLIENT_CREATED_KEY) || '[]');
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  };
+
+  const upsertClientCreatedEvent = (eventData) => {
+    const current = getClientCreatedEvents();
+    const eventId = String(eventData?.event_id || eventData?.id || `manual-${Date.now()}`);
+    const nextEvent = {
+      ...eventData,
+      event_id: eventId,
+      id: eventId,
+      source_type: eventData?.source_type || 'leave_configuration',
+      event_type: eventData?.event_type || 'leave'
+    };
+    const withoutCurrent = current.filter((e) => String(e?.event_id || e?.id) !== eventId);
+    const merged = [nextEvent, ...withoutCurrent];
+    localStorage.setItem(CLIENT_CREATED_KEY, JSON.stringify(merged));
+    return nextEvent;
+  };
+
+  const removeClientCreatedEvent = (id) => {
+    const targetId = String(id);
+    const current = getClientCreatedEvents();
+    const filtered = current.filter((e) => String(e?.event_id || e?.id) !== targetId);
+    localStorage.setItem(CLIENT_CREATED_KEY, JSON.stringify(filtered));
   };
 
   useEffect(() => {
@@ -439,17 +544,36 @@ const [showConfiguredList, setShowConfiguredList] = useState(true);
         setLockedFeatures([]);
       }
       
-      // Set leave configuration from other_settings
-      if (data.other_settings && data.other_settings.leave_config) {
-        setLeaveConfig(data.other_settings.leave_config);
-      } else {
-        // Initialize with empty config if not set
-        setLeaveConfig({});
+      // Set leave configuration from other_settings (supports object or serialized string)
+      const parsedOtherSettings = parseJsonLike(data?.other_settings) || {};
+      const parsedLeaveConfig = parseJsonLike(parsedOtherSettings?.leave_config);
+      const normalizedLeaveConfig = normalizeLeaveConfig(parsedLeaveConfig);
+      const cachedLeaveConfig = readLeaveConfigCache();
+      if (Object.prototype.hasOwnProperty.call(parsedOtherSettings, 'leave_config')) {
+        // Guard against stale/empty fetch responses wiping locally-added leave types.
+        const resolvedLeaveConfig = Object.keys(normalizedLeaveConfig).length > 0
+          ? normalizedLeaveConfig
+          : (Object.keys(cachedLeaveConfig).length > 0
+              ? cachedLeaveConfig
+              : normalizeLeaveConfig(leaveConfig));
+
+        setLeaveConfig(resolvedLeaveConfig);
+        if (Object.keys(resolvedLeaveConfig).length > 0) {
+          persistLeaveConfigCache(resolvedLeaveConfig);
+        }
+      } else if (Object.keys(leaveConfig || {}).length === 0) {
+        // Initialize only when no local leave config exists yet.
+        if (Object.keys(cachedLeaveConfig).length > 0) {
+          setLeaveConfig(cachedLeaveConfig);
+        } else {
+          setLeaveConfig({});
+          persistLeaveConfigCache({});
+        }
       }
       
       // Set door access configuration from other_settings
-      if (data.other_settings && data.other_settings.door_access_config) {
-        setDoorAccessConfig(data.other_settings.door_access_config);
+      if (parsedOtherSettings && parsedOtherSettings.door_access_config) {
+        setDoorAccessConfig(parsedOtherSettings.door_access_config);
       } else {
         // Initialize with default config
         const webhookUrl = `${window.location.origin}/api/timesheet/door-access`;
@@ -524,13 +648,20 @@ const [showConfiguredList, setShowConfiguredList] = useState(true);
 
   const handleSave = async () => {
     try {
+      if (savingLeaveConfig) {
+        setError('Leave configuration is still saving. Please wait and click Save Changes again.');
+        return;
+      }
+
       setSaving(true);
       setError(null);
       setSuccess(null);
       
       // Get existing other_settings to preserve other configurations (including payroll_config)
-      const existingOtherSettings = settings?.other_settings || {};
+      const existingOtherSettings = parseJsonLike(settings?.other_settings) || {};
       
+      const normalizedLeaveConfig = normalizeLeaveConfig(leaveConfig);
+
       const updateData = {
         company_email_domain: emailDomain,
         company_name: companyName || null,
@@ -544,7 +675,7 @@ const [showConfiguredList, setShowConfiguredList] = useState(true);
         features_config: featuresConfig,
         other_settings: {
           ...existingOtherSettings,
-          leave_config: leaveConfig,
+          leave_config: normalizedLeaveConfig,
           door_access_config: doorAccessConfig
           // Payroll config is now managed in accountant Settings, so we preserve it but don't modify it here
         }
@@ -554,12 +685,10 @@ const [showConfiguredList, setShowConfiguredList] = useState(true);
       
       // Update local settings state immediately to prevent state loss
       setSettings(response.data);
+      persistLeaveConfigCache(normalizedLeaveConfig);
       
       setSuccess('Settings saved successfully!');
       setTimeout(() => setSuccess(null), 3000);
-      
-      // Also refresh to ensure we have the latest from server
-      await fetchSettings();
       
       // Broadcast settings update via WebSocket for real-time sync
       if (isConnected) {
@@ -588,18 +717,34 @@ const [showConfiguredList, setShowConfiguredList] = useState(true);
 
   const saveLeaveConfig = async (nextLeaveConfig, successMessage = 'Leave configuration updated successfully!') => {
     try {
+      setSavingLeaveConfig(true);
+      const saveRequestId = ++leaveConfigSaveRequestRef.current;
       setError(null);
-      const existingOtherSettings = settings?.other_settings || {};
+      const existingOtherSettings = parseJsonLike(settings?.other_settings) || {};
+      const normalizedLeaveConfig = normalizeLeaveConfig(nextLeaveConfig);
+      // Optimistic update to keep UI stable while request is in flight.
+      setLeaveConfig(normalizedLeaveConfig);
+      persistLeaveConfigCache(normalizedLeaveConfig);
       const response = await api.put('/settings/', {
         other_settings: {
           ...existingOtherSettings,
-          leave_config: nextLeaveConfig,
+          leave_config: normalizedLeaveConfig,
           door_access_config: doorAccessConfig
         }
       });
 
-      setLeaveConfig(nextLeaveConfig);
+      const parsedOtherSettings = parseJsonLike(response?.data?.other_settings) || {};
+      const parsedLeaveConfig = parseJsonLike(parsedOtherSettings?.leave_config);
+
+      // Ignore stale responses from older save requests.
+      if (saveRequestId !== leaveConfigSaveRequestRef.current) {
+        return;
+      }
+
+      const normalizedResponseLeaveConfig = normalizeLeaveConfig(parsedLeaveConfig || normalizedLeaveConfig);
+      setLeaveConfig(normalizedResponseLeaveConfig);
       setSettings(response.data);
+      persistLeaveConfigCache(normalizedResponseLeaveConfig);
       setSuccess(successMessage);
       setTimeout(() => setSuccess(null), 3000);
 
@@ -621,6 +766,8 @@ const [showConfiguredList, setShowConfiguredList] = useState(true);
     } catch (err) {
       console.error('Error updating leave configuration:', err);
       setError(err.response?.data?.detail || 'Failed to update leave configuration');
+    } finally {
+      setSavingLeaveConfig(false);
     }
   };
 
@@ -645,6 +792,9 @@ const [showConfiguredList, setShowConfiguredList] = useState(true);
     delete nextLeaveConfig[leaveType];
     await saveLeaveConfig(nextLeaveConfig, `${leaveType} removed successfully!`);
   };
+
+  const isPermissionLeaveType = (leaveType) =>
+    String(leaveType || '').trim().toLowerCase().includes('permission');
   
   const handleAddTask = () => {
     if (newTask.title && newTask.description) {
@@ -868,7 +1018,7 @@ const handleDeleteLeaveFile = async (fileId) => {
       <div className="bg-white rounded-xl shadow-lg border border-gray-200 p-6">
         <div className="flex items-center justify-between">
           <div className="flex items-center space-x-3">
-            <FiSettings className="w-8 h-8 text-purple-600" />
+            <FiSettings className="w-8 h-8 text-[#ffbd59]" />
             <div>
               <h2 className="text-2xl font-bold text-gray-900">Admin Settings</h2>
               <p className="text-gray-600">Configure system-wide settings and features</p>
@@ -877,11 +1027,11 @@ const handleDeleteLeaveFile = async (fileId) => {
           {activeTab === 'settings' && (
             <button
               onClick={handleSave}
-              disabled={saving}
-              className="flex items-center space-x-2 px-6 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              disabled={saving || savingLeaveConfig}
+              className="flex items-center space-x-2 px-6 py-2 bg-[#181c52] text-white rounded-lg hover:bg-[#2c2f70] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
               <FiSave className="w-5 h-5" />
-              <span>{saving ? 'Saving...' : 'Save Changes'}</span>
+              <span>{saving ? 'Saving...' : savingLeaveConfig ? 'Please wait...' : 'Save Changes'}</span>
             </button>
           )}
         </div>
@@ -898,7 +1048,7 @@ const handleDeleteLeaveFile = async (fileId) => {
               onClick={() => setActiveTab('settings')}
               className={`flex items-center space-x-2 py-4 px-1 border-b-2 font-medium text-sm transition-colors ${
                 activeTab === 'settings'
-                  ? 'border-purple-600 text-purple-600'
+                  ? 'border-[#ffbd59] text-[#181c52]'
                   : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
               }`}
             >
@@ -909,7 +1059,7 @@ const handleDeleteLeaveFile = async (fileId) => {
               onClick={() => setActiveTab('usage')}
               className={`flex items-center space-x-2 py-4 px-1 border-b-2 font-medium text-sm transition-colors ${
                 activeTab === 'usage'
-                  ? 'border-purple-600 text-purple-600'
+                  ? 'border-[#ffbd59] text-[#181c52]'
                   : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
               }`}
             >
@@ -946,7 +1096,7 @@ const handleDeleteLeaveFile = async (fileId) => {
       {/* Email Configuration */}
       <div className="bg-white rounded-xl shadow-lg border border-gray-200 p-6">
         <div className="flex items-center space-x-3 mb-6">
-          <FiMail className="w-6 h-6 text-purple-600" />
+          <FiMail className="w-6 h-6 text-[#ffbd59]" />
           <h3 className="text-xl font-semibold text-gray-900">Email Configuration</h3>
         </div>
         <div className="space-y-4">
@@ -1241,7 +1391,7 @@ const handleDeleteLeaveFile = async (fileId) => {
       {/* Door Access Configuration */}
       <div className="bg-white rounded-xl shadow-lg border border-gray-200 p-6">
         <div className="flex items-center space-x-3 mb-6">
-          <FiLogIn className="w-6 h-6 text-purple-600" />
+          <FiLogIn className="w-6 h-6 text-[#ffbd59]" />
           <h3 className="text-xl font-semibold text-gray-900">Door Access Integration</h3>
         </div>
         <div className="space-y-4">
@@ -1380,6 +1530,8 @@ const handleDeleteLeaveFile = async (fileId) => {
         </div>
       </div>
       
+         
+      
       {/* Leave Configuration */}
       <div className="bg-white rounded-xl shadow-lg border border-gray-200 p-6">
         <div className="flex items-center space-x-3 mb-6">
@@ -1403,15 +1555,19 @@ const handleDeleteLeaveFile = async (fileId) => {
                 </div>
                 <button
                   onClick={() => {
-                    const quickSetupConfig = {
-                      'Casual Leave': 10,
-                      'Compensatory Off': 10,
-                      'Unpaid Leave': 5,
-                      'PL or Earned Leave': 20,
-                      'Sick Leave': 15,
-                      'Permission Required': 10
-                    };
-                    saveLeaveConfig(quickSetupConfig, 'Default leave types added successfully!');
+                    
+                    setLeaveConfig({
+                      // 'Casual Leave': 6,
+                      // 'Earned Leave': 12,
+                      // 'Sick Leave': 6,
+                      // 'Compensatory Off': "",
+                      // 'Loss Of Pay': "",
+                      // 'Maternity Leave': "",
+                      // 'Paternity Leave': "",
+                      // 'Bereavement Leave': "",
+                      // 'Marriage Leave': "",
+                      // 'Work From Home': "",
+                    });
                   }}
                   className="ml-4 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm font-medium whitespace-nowrap"
                 >
@@ -1434,19 +1590,21 @@ const handleDeleteLeaveFile = async (fileId) => {
                     value={days}
                     onChange={(e) => {
                       const newValue = parseInt(e.target.value) || 0;
-                      const nextLeaveConfig = {
+                      setLeaveConfig({
                         ...leaveConfig,
                         [leaveType]: newValue
-                      };
-                      setLeaveConfig(nextLeaveConfig);
-                      saveLeaveConfig(nextLeaveConfig, `${leaveType} updated successfully!`);
+                      });
                     }}
                     className="w-20 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent text-right"
                   />
                   <span className="text-sm text-gray-500">days</span>
                   <button
                     type="button"
-                    onClick={() => handleDeleteLeaveType(leaveType)}
+                    onClick={() => {
+                      const nextLeaveConfig = { ...leaveConfig };
+                      delete nextLeaveConfig[leaveType];
+                      setLeaveConfig(nextLeaveConfig);
+                    }}
                     className="px-2 py-1 bg-red-100 text-red-700 rounded-md hover:bg-red-200 transition-colors text-xs"
                   >
                     Delete
@@ -1467,8 +1625,13 @@ const handleDeleteLeaveFile = async (fileId) => {
                   if (e.key === 'Enter') {
                     const input = e.target;
                     const leaveType = input.value.trim();
-                    handleAddLeaveType(leaveType);
-                    input.value = '';
+                    if (leaveType && !leaveConfig[leaveType]) {
+                      setLeaveConfig({
+                        ...leaveConfig,
+                        [leaveType]: 0
+                      });
+                      input.value = '';
+                    }
                   }
                 }}
               />
@@ -1476,8 +1639,13 @@ const handleDeleteLeaveFile = async (fileId) => {
                 onClick={() => {
                   const input = document.getElementById('newLeaveType');
                   const leaveType = input?.value.trim();
-                  handleAddLeaveType(leaveType);
-                  if (input) input.value = '';
+                  if (leaveType && !leaveConfig[leaveType]) {
+                    setLeaveConfig({
+                      ...leaveConfig,
+                      [leaveType]: 0
+                    });
+                    if (input) input.value = '';
+                  }
                 }}
                 className="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors"
               >
@@ -1557,16 +1725,17 @@ const handleDeleteLeaveFile = async (fileId) => {
         </div>
       </div>
 
+
       {/* Calendar Configuration */}
       <div className="bg-white rounded-xl shadow-lg border border-gray-200 p-6">
         <div className="flex items-center space-x-3 mb-6">
-          <FiCalendar className="w-6 h-6 text-purple-600" />
+          <FiCalendar className="w-6 h-6 text-[#ffbd59]" />
           <h3 className="text-xl font-semibold text-gray-900">Calendar Configuration</h3>
         </div>
         <div>
            <button
     onClick={() => setShowLeaveModal(true)}
-    className="bg-purple-600 text-white px-4 py-2 rounded-lg hover:bg-purple-700"
+    className="bg-[#181c52] text-white px-4 py-2 rounded-lg hover:bg-[#2c2f72]"
   >
     ➕ Add Leave
   </button>
@@ -1575,10 +1744,8 @@ const handleDeleteLeaveFile = async (fileId) => {
           <p className="text-sm text-gray-600 mb-4 py-4">
             Configure the leave days in the organization calendar. 
           </p>
-        </div>  
-       </div> 
-
-      <div className="mt-6">
+        </div>
+        <div className="mt-6">
         <div className="flex items-center justify-between mb-3">
           <div className="flex items-center">
             <button
@@ -1598,7 +1765,10 @@ const handleDeleteLeaveFile = async (fileId) => {
             Add Leave
           </button> */}
         </div>
+  
+       </div> 
 
+      
         {showConfiguredList && (
           (configuredLeaves && configuredLeaves.length > 0) ? (
             <div className="space-y-3">
@@ -1640,6 +1810,15 @@ const handleDeleteLeaveFile = async (fileId) => {
 
                         try {
                           const id = event.event_id || event.id;
+                          const isLocalOnlyEvent = String(id).startsWith('manual-');
+
+                          if (isLocalOnlyEvent) {
+                            removeClientCreatedEvent(id);
+                            setConfiguredLeaves(prev => prev.filter(e => String(e.event_id || e.id) !== String(id)));
+                            alert('Leave removed successfully!');
+                            return;
+                          }
+
                           console.debug('[Settings] deleting event id=', id, 'event=', event);
                           const res = await calendarAPI.deleteEvent(id);
                           console.debug('[Settings] delete response=', res);
@@ -1680,6 +1859,12 @@ const handleDeleteLeaveFile = async (fileId) => {
                               console.warn('Client-side fallback failed', e);
                             }
                           } else {
+                            if (status === 404) {
+                              addClientDeletedId(id);
+                              setConfiguredLeaves(prev => prev.filter(e => String(e.event_id || e.id) !== String(id)));
+                              alert('Calendar delete endpoint is unavailable (404). The leave has been hidden locally.');
+                              return;
+                            }
                             const msg = (data && (data.detail || data.message)) || err?.message || 'Failed to delete leave';
                             alert(msg);
                           }
@@ -1851,6 +2036,29 @@ const handleDeleteLeaveFile = async (fileId) => {
               fetchConfiguredLeaves();
               alert('Leave/holiday event saved successfully!');
             } catch (err) {
+              const status = err?.response?.status;
+              if (status === 404) {
+                const localId = editingLeave?.event_id || editingLeave?.id || `manual-${Date.now()}`;
+                const localEvent = upsertClientCreatedEvent({
+                  ...payload,
+                  event_id: localId,
+                  id: localId
+                });
+
+                setConfiguredLeaves((prev) => {
+                  const filtered = prev.filter((e) => String(e.event_id || e.id) !== String(localId));
+                  return [localEvent, ...filtered];
+                });
+
+                setShowLeaveModal(false);
+                setLeaveTitle('');
+                setLeaveDate(new Date());
+                setLeaveColor('');
+                setEditingLeave(null);
+                alert('Calendar endpoint is unavailable (404). Leave saved locally in this browser as a fallback.');
+                return;
+              }
+
               let msg = 'Failed to save leave/holiday event.';
               if (err && err.response && err.response.data && err.response.data.detail) {
                 msg += '\n' + err.response.data.detail;
@@ -1887,7 +2095,7 @@ const handleDeleteLeaveFile = async (fileId) => {
       {/* Feature Toggles */}
       <div className="bg-white rounded-xl shadow-lg border border-gray-200 p-6">
         <div className="flex items-center space-x-3 mb-6">
-          <FiSettings className="w-6 h-6 text-purple-600" />
+          <FiSettings className="w-6 h-6 text-[#ffbd59]" />
           <h3 className="text-xl font-semibold text-gray-900">Feature Management</h3>
         </div>
         
@@ -1918,7 +2126,7 @@ const handleDeleteLeaveFile = async (fileId) => {
                       isFeatureLocked(key)
                         ? 'bg-yellow-50 text-yellow-700 cursor-not-allowed opacity-75 border border-yellow-200'
                         : featuresConfig[key]
-                        ? 'bg-purple-100 text-purple-700 hover:bg-purple-200'
+                        ? 'bg-yellow-100 text-black-700 hover:bg-yellow-200'
                         : !isFeatureInPlan(key)
                         ? 'bg-gray-50 text-gray-400 cursor-not-allowed opacity-50'
                         : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
@@ -1972,7 +2180,7 @@ const handleDeleteLeaveFile = async (fileId) => {
                       isFeatureLocked(key)
                         ? 'bg-yellow-50 text-yellow-700 cursor-not-allowed opacity-75 border border-yellow-200'
                         : featuresConfig[key]
-                        ? 'bg-purple-100 text-purple-700 hover:bg-purple-200'
+                        ? 'bg-yellow-100 text-black-700 hover:bg-yellow-200'
                         : !isFeatureInPlan(key)
                         ? 'bg-gray-50 text-gray-400 cursor-not-allowed opacity-50'
                         : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
@@ -2024,7 +2232,7 @@ const handleDeleteLeaveFile = async (fileId) => {
                       isFeatureLocked(key)
                         ? 'bg-yellow-50 text-yellow-700 cursor-not-allowed opacity-75 border border-yellow-200'
                         : featuresConfig[key]
-                        ? 'bg-purple-100 text-purple-700 hover:bg-purple-200'
+                        ? 'bg-yellow-100 text-black-700 hover:bg-yellow-200'
                         : !isFeatureInPlan(key)
                         ? 'bg-gray-50 text-gray-400 cursor-not-allowed opacity-50'
                         : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
@@ -2075,7 +2283,7 @@ const handleDeleteLeaveFile = async (fileId) => {
                       isFeatureLocked(key)
                         ? 'bg-yellow-50 text-yellow-700 cursor-not-allowed opacity-75 border border-yellow-200'
                         : featuresConfig[key]
-                        ? 'bg-purple-100 text-purple-700 hover:bg-purple-200'
+                        ? 'bg-yellow-100 text-black-700 hover:bg-yellow-200'
                         : !isFeatureInPlan(key)
                         ? 'bg-gray-50 text-gray-400 cursor-not-allowed opacity-50'
                         : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
@@ -2114,7 +2322,7 @@ const handleDeleteLeaveFile = async (fileId) => {
               {/* Plan & Usage Section */}
               <div className="flex items-center justify-between mb-6">
                 <div className="flex items-center space-x-3">
-                  <FiPackage className="w-6 h-6 text-purple-600" />
+                  <FiPackage className="w-6 h-6 text-[#ffbd59]" />
                   <h3 className="text-xl font-semibold text-gray-900">Plan & Usage</h3>
                 </div>
                 <button
@@ -2201,7 +2409,7 @@ const handleDeleteLeaveFile = async (fileId) => {
             {/* Usage Statistics */}
             <div>
               <h4 className="text-lg font-semibold text-gray-900 mb-4 flex items-center">
-                <FiBarChart className="w-5 h-5 mr-2 text-purple-600" />
+                <FiBarChart className="w-5 h-5 mr-2 text-[#ffbd59]" />
                 Usage Statistics
               </h4>
               <div className="space-y-4">
@@ -2242,7 +2450,7 @@ const handleDeleteLeaveFile = async (fileId) => {
                                   ? 'bg-red-500'
                                   : isNearLimit
                                   ? 'bg-yellow-500'
-                                  : 'bg-purple-600'
+                                  : 'bg-green-600'
                               }`}
                               style={{ width: `${Math.min(usagePercent, 100)}%` }}
                             ></div>

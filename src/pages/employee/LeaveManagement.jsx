@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { leaveAPI, leavePolicyAPI, workflowAPI } from '../../services/api';
 import api from '../../services/api';
 import { WorkflowStatusCard, WorkflowDiagram, WorkflowTimeline } from '../../components/workflow';
@@ -16,9 +16,101 @@ export default function LeaveManagement() {
   const [loadingPolicy, setLoadingPolicy] = useState(false);
   const [policyMessage, setPolicyMessage] = useState(null);
   const [workflows, setWorkflows] = useState({});
+  const [loadingWorkflows, setLoadingWorkflows] = useState({});
   const [expandedWorkflow, setExpandedWorkflow] = useState(null);
+  const [activeTab, setActiveTab] = useState('leave');
 
   const normalizeLeaveType = (value) => String(value || '').trim().toLowerCase();
+  const normalizeStatus = (value) => String(value || '').trim().toUpperCase();
+  const isApprovedStatus = (value) => normalizeStatus(value) === 'APPROVED';
+  const isRejectedStatus = (value) => ['REJECTED', 'DECLINED'].includes(normalizeStatus(value));
+  const isPaidLeaveType = (value) => {
+    const normalized = normalizeLeaveType(value);
+    return normalized.includes('paid') && !normalized.includes('unpaid');
+  };
+  const isUnpaidLeaveType = (value) => normalizeLeaveType(value).includes('unpaid');
+  const isPlOrEarnedLeaveType = (value) => {
+    const normalized = normalizeLeaveType(value);
+    return normalized.includes('pl or earned leave') || normalized.includes('earned leave');
+  };
+  const isPermissionType = (value) => normalizeLeaveType(value).includes('permission');
+
+  const getLeaveDurationDays = (leave) => {
+    const start = new Date(leave?.start_date);
+    const end = new Date(leave?.end_date || leave?.start_date);
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+      return 0;
+    }
+    return Math.max(0, Math.ceil((end - start) / (1000 * 60 * 60 * 24)) + 1);
+  };
+
+  const extractPermissionHours = (leave) => {
+    const explicitHours = Number(leave?.permission_hours);
+    if (Number.isFinite(explicitHours) && explicitHours > 0) {
+      return explicitHours;
+    }
+
+    const notes = String(leave?.notes || '');
+    const match = notes.match(/Permission Hours:\s*([0-9]+(?:\.[0-9]+)?)/i);
+    if (match) {
+      const parsed = Number(match[1]);
+      if (Number.isFinite(parsed) && parsed > 0) {
+        return parsed;
+      }
+    }
+
+    return getLeaveDurationDays(leave) * 8;
+  };
+
+  const getLeaveDurationHours = (leave) => getLeaveDurationDays(leave) * 8;
+
+  const requestedLeaves = useMemo(
+    () => leaveHistory.filter((leave) => ['PENDING', 'REQUESTED'].includes(normalizeStatus(leave?.status))),
+    [leaveHistory]
+  );
+
+  const approvedLeaves = useMemo(
+    () => leaveHistory.filter((leave) => normalizeStatus(leave?.status) === 'APPROVED'),
+    [leaveHistory]
+  );
+
+  const rejectedLeaves = useMemo(
+    () => leaveHistory.filter((leave) => ['REJECTED', 'DECLINED'].includes(normalizeStatus(leave?.status))),
+    [leaveHistory]
+  );
+
+  const normalizeLeaveConfig = (config) => {
+    if (!config || typeof config !== 'object') return {};
+    return Object.entries(config).reduce((acc, [key, rawValue]) => {
+      const leaveType = String(key || '').trim();
+      if (!leaveType) return acc;
+      const parsed = Number(rawValue);
+      acc[leaveType] = Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+      return acc;
+    }, {});
+  };
+
+  const getLeaveConfigCacheKey = () => {
+    const org = localStorage.getItem('selectedOrganization') || 'default';
+    return `leave_config_cache:${org}`;
+  };
+
+  const readCachedLeaveConfig = () => {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(getLeaveConfigCacheKey()) || '{}');
+      return normalizeLeaveConfig(parsed);
+    } catch {
+      return {};
+    }
+  };
+
+  const persistLeaveConfigCache = (config) => {
+    try {
+      localStorage.setItem(getLeaveConfigCacheKey(), JSON.stringify(normalizeLeaveConfig(config)));
+    } catch {
+      // Ignore cache write errors.
+    }
+  };
 
   useEffect(() => {
     fetchLeaveConfig();
@@ -34,31 +126,51 @@ export default function LeaveManagement() {
       const response = await Promise.race([api.get('/settings/leave-config'), timeoutPromise]);
       if (response && response.__timedout) {
         console.warn('Leave config request timed out');
-        setError('Loading leave configuration timed out. Please try refreshing the page.');
-        setLeaveConfig({}); // mark as empty so UI can show a helpful message
+        const cached = readCachedLeaveConfig();
+        if (Object.keys(cached).length > 0) {
+          setLeaveConfig(cached);
+          setError(null);
+        } else {
+          setError('Loading leave configuration timed out. Please try refreshing the page.');
+          setLeaveConfig({}); // mark as empty so UI can show a helpful message
+        }
         setLoading(false);
         return;
       }
       const data = response.data;
       console.log('Leave config response:', data);
       console.log('leave_config:', data?.leave_config);
-      
-      if (data?.leave_config && Object.keys(data.leave_config).length > 0) {
-        console.log('Leave config found:', data.leave_config);
-        setLeaveConfig(data.leave_config);
+
+      const normalizedConfig = normalizeLeaveConfig(data?.leave_config);
+      if (Object.keys(normalizedConfig).length > 0) {
+        console.log('Leave config found:', normalizedConfig);
+        setLeaveConfig(normalizedConfig);
+        persistLeaveConfigCache(normalizedConfig);
         setError(null); // Clear any previous errors
       } else {
-        // No configuration set - show error
-        console.warn('No leave configuration found in settings');
-        setError('Leave configuration is not set. Please contact your administrator to configure leave days in the settings.');
-        setLeaveConfig({}); // Empty config to prevent calculation
-        // No need to wait for fetchLeaveData; stop the loading indicator so UI shows the message
+        const cached = readCachedLeaveConfig();
+        if (Object.keys(cached).length > 0) {
+          console.warn('No leave configuration from API, using cached configuration');
+          setLeaveConfig(cached);
+          setError(null);
+        } else {
+          // No configuration set - show error
+          console.warn('No leave configuration found in settings');
+          setError('Leave configuration is not set. Please contact your administrator to configure leave days in the settings.');
+          setLeaveConfig({}); // Empty config to prevent calculation
+        }
         setLoading(false);
       }
     } catch (err) {
       console.error('Failed to fetch leave configuration:', err);
-      setError('Failed to load leave configuration. Please contact your administrator.');
-      setLeaveConfig({}); // Empty config to prevent calculation
+      const cached = readCachedLeaveConfig();
+      if (Object.keys(cached).length > 0) {
+        setLeaveConfig(cached);
+        setError(null);
+      } else {
+        setError('Failed to load leave configuration. Please contact your administrator.');
+        setLeaveConfig({}); // Empty config to prevent calculation
+      }
       setLoading(false);
     }
   }, []);
@@ -71,88 +183,54 @@ export default function LeaveManagement() {
       console.log('Fetching leave data...');
       let history;
       let usingFallbackData = false;
+
+      const getLeaveHistoryCacheKey = () => {
+        const org = localStorage.getItem('selectedOrganization') || 'default';
+        return `leave_history_cache:${org}`;
+      };
+
+      const readCachedLeaveHistory = () => {
+        try {
+          const parsed = JSON.parse(localStorage.getItem(getLeaveHistoryCacheKey()) || '[]');
+          return Array.isArray(parsed) ? parsed : [];
+        } catch {
+          return [];
+        }
+      };
+
+      const persistLeaveHistoryCache = (records) => {
+        try {
+          localStorage.setItem(getLeaveHistoryCacheKey(), JSON.stringify(Array.isArray(records) ? records : []));
+        } catch {
+          // Ignore cache write errors.
+        }
+      };
+
+      const normalizeLeaveHistory = (payload) => {
+        if (Array.isArray(payload)) return payload;
+        if (!payload || typeof payload !== 'object') return [];
+        if (Array.isArray(payload.records)) return payload.records;
+        if (Array.isArray(payload.items)) return payload.items;
+        if (Array.isArray(payload.data)) return payload.data;
+        const firstArray = Object.values(payload).find((value) => Array.isArray(value));
+        return Array.isArray(firstArray) ? firstArray : [];
+      };
       
       try {
         // Get employee's own leave records
-        history = await leaveAPI.getMyLeaves();
-        console.log('Leave history received from API:', history);
-        console.log('History type:', typeof history, 'Is array:', Array.isArray(history));
-        
-        if (!Array.isArray(history)) {
-          console.error('Invalid history data:', history);
-          throw new Error('API returned invalid data');
-        }
+        const responseHistory = await leaveAPI.getMyLeaves();
+        history = normalizeLeaveHistory(responseHistory);
+        console.log('Leave history received from API:', responseHistory);
+        console.log('Normalized leave history count:', history.length);
+        persistLeaveHistoryCache(history);
       } catch (apiError) {
         console.error('API call failed:', apiError);
-        console.log('Using known leave data from database');
-        usingFallbackData = true;
-        
-        // Use the actual leave data we know exists based on the database test
-        history = [
-          {
-            leave_type: "Sick Leave",
-            start_date: "2025-10-08",
-            end_date: "2025-10-09",
-            status: "APPROVED",
-            notes: "I had fever so doctor advice me to had complete rest"
-          },
-          {
-            leave_type: "Paid Leave",
-            start_date: "2025-10-06",
-            end_date: "2025-10-07", 
-            status: "PENDING",
-            notes: "Due to some personal reasons"
-          },
-          {
-            leave_type: "Sick Leave",
-            start_date: "2025-09-30",
-            end_date: "2025-09-30",
-            status: "APPROVED", 
-            notes: "I had an appointment with doctor"
-          },
-          {
-            leave_type: "Sick Leave",
-            start_date: "2025-09-24",
-            end_date: "2025-09-25",
-            status: "APPROVED",
-            notes: "medical appointment"
-          },
-          {
-            leave_type: "Sick Leave",
-            start_date: "2025-09-23",
-            end_date: "2025-09-24",
-            status: "APPROVED",
-            notes: "Personal Matter"
-          },
-          {
-            leave_type: "Sick Leave",
-            start_date: "2025-09-22",
-            end_date: "2025-09-23",
-            status: "APPROVED",
-            notes: "personal matters"
-          }
-        ];
+        history = readCachedLeaveHistory();
+        usingFallbackData = history.length > 0;
       }
       
       setLeaveHistory(history);
       
-      // Fetch workflows for each leave request
-      const workflowMap = {};
-      for (const leave of (history || [])) {
-        try {
-          // Determine a best-effort resource id — different backends may use different fields
-          const resourceId = leave.leave_id ?? leave.id ?? leave.request_id ?? leave.uuid ?? null;
-          console.debug('Fetching workflow for leave record', { leave, resourceId });
-          if (!resourceId) continue;
-          const leaveWorkflows = await workflowAPI.getInstances('leave', resourceId);
-          if (leaveWorkflows?.length > 0) {
-            workflowMap[resourceId] = leaveWorkflows[0];
-          }
-        } catch (err) {
-          console.warn(`Failed to fetch workflow for leave (possible id fields)`, err, leave);
-        }
-      }
-      setWorkflows(workflowMap);
       setUsingFallbackData(usingFallbackData);
       
       // Check if leave configuration is available
@@ -167,7 +245,9 @@ export default function LeaveManagement() {
       console.log('Using leave config for calculation:', leaveConfig);
       
       // Calculate actual leave balance based on records
-      const currentYear = new Date().getFullYear();
+      const now = new Date();
+      const currentYear = now.getFullYear();
+      const currentMonth = now.getMonth() + 1;
       
       // Calculate used and pending leaves for each type
       const leaveTypes = Object.keys(leaveConfig);
@@ -175,23 +255,89 @@ export default function LeaveManagement() {
       
       leaveTypes.forEach(type => {
         // Get configured entitlement for this leave type
-        const totalAllowed = leaveConfig[type] || 0;
+        const totalAllowed = Number(leaveConfig[type]) || 0;
+        const normalizedType = normalizeLeaveType(type);
         
-        // Calculate used leaves (approved)
-        const usedLeaves = history.filter(leave => 
-          leave.leave_type === type && 
-          leave.status === 'APPROVED' && 
-          new Date(leave.start_date).getFullYear() === currentYear
-        );
+        // Count only APPROVED leaves as taken.
+        // REJECTED/DECLINED and pending/requested leaves do not reduce balance.
+        const usedLeaves = history.filter((leave) => {
+          const leaveStatus = normalizeStatus(leave?.status);
+          if (isRejectedStatus(leaveStatus)) return false;
+
+          return (
+          normalizeLeaveType(leave?.leave_type) === normalizedType &&
+          isApprovedStatus(leaveStatus) &&
+          new Date(leave?.start_date).getFullYear() === currentYear
+          );
+        });
         
-        const totalUsed = usedLeaves.reduce((sum, leave) => {
-          const start = new Date(leave.start_date);
-          const end = new Date(leave.end_date);
-          const days = Math.ceil((end - start) / (1000 * 60 * 60 * 24)) + 1;
-          return sum + days;
-        }, 0);
-        
-        calculatedBalance[type] = Math.max(0, totalAllowed - totalUsed);
+        const totalUsed = usedLeaves.reduce((sum, leave) => sum + getLeaveDurationDays(leave), 0);
+
+        if (isPermissionType(type)) {
+          const monthlyApprovedLeaves = usedLeaves.filter((leave) => {
+            const leaveDate = new Date(leave?.start_date);
+            return leaveDate.getMonth() + 1 === currentMonth;
+          });
+          const monthlyTakenHours = monthlyApprovedLeaves.reduce((sum, leave) => sum + extractPermissionHours(leave), 0);
+          const monthlyAllowedHours = totalAllowed;
+
+          calculatedBalance[type] = {
+            remaining: Math.max(0, monthlyAllowedHours - monthlyTakenHours),
+            taken: monthlyTakenHours,
+            unit: 'hours',
+            monthlyTakenHours
+          };
+          return;
+        }
+
+        if (isPlOrEarnedLeaveType(type)) {
+          const usedInCurrentMonth = usedLeaves.some((leave) => {
+            const leaveDate = new Date(leave?.start_date);
+            return leaveDate.getMonth() + 1 === currentMonth;
+          });
+
+          calculatedBalance[type] = {
+            remaining: usedInCurrentMonth ? 0 : 1,
+            taken: usedInCurrentMonth ? 1 : 0,
+            unit: 'days',
+            monthlyRule: true
+          };
+          return;
+        }
+
+        if (isPaidLeaveType(type)) {
+          const annualPaidLeave = totalAllowed > 0 ? totalAllowed : 12;
+          const accruedTillCurrentMonth = Math.min(annualPaidLeave, currentMonth);
+          const usedTillCurrentMonth = usedLeaves
+            .filter((leave) => {
+              const leaveDate = new Date(leave?.start_date);
+              return leaveDate.getMonth() + 1 <= currentMonth;
+            })
+            .reduce((sum, leave) => sum + getLeaveDurationDays(leave), 0);
+
+          calculatedBalance[type] = {
+            remaining: Math.max(0, accruedTillCurrentMonth - usedTillCurrentMonth),
+            taken: usedTillCurrentMonth,
+            unit: 'days'
+          };
+          return;
+        }
+
+        if (isUnpaidLeaveType(type)) {
+          calculatedBalance[type] = {
+            remaining: null,
+            taken: totalUsed,
+            unit: 'days',
+            isAsRequired: true
+          };
+          return;
+        }
+
+        calculatedBalance[type] = {
+          remaining: Math.max(0, totalAllowed - totalUsed),
+          taken: totalUsed,
+          unit: 'days'
+        };
       });
       
       setLeaveBalance(calculatedBalance);
@@ -262,16 +408,13 @@ export default function LeaveManagement() {
     try {
       setLoadingPolicy(true);
       setPolicyMessage(null);
-      // Fetch policies filtered by leave type
-      let policies = await leavePolicyAPI.getPolicies(true, leaveType);
-
-      if (!Array.isArray(policies) || policies.length === 0) {
-        const allActivePolicies = await leavePolicyAPI.getPolicies(true);
-        const normalizedType = normalizeLeaveType(leaveType);
-        policies = (Array.isArray(allActivePolicies) ? allActivePolicies : []).filter(
-          (policy) => normalizeLeaveType(policy?.leave_type) === normalizedType
-        );
-      }
+      // Always fetch active policies and filter client-side.
+      // Backend rejects unknown leave_type query values with 400 for custom leave types.
+      const allActivePolicies = await leavePolicyAPI.getPolicies(true);
+      const normalizedType = normalizeLeaveType(leaveType);
+      const policies = (Array.isArray(allActivePolicies) ? allActivePolicies : []).filter(
+        (policy) => normalizeLeaveType(policy?.leave_type) === normalizedType
+      );
       
       if (policies && policies.length > 0) {
         // Find the most relevant policy (usually the first one or the most recent)
@@ -288,6 +431,27 @@ export default function LeaveManagement() {
       setLoadingPolicy(false);
     }
   };
+
+  const fetchWorkflowForLeave = useCallback(async (resourceId, leaveRecord) => {
+    if (!resourceId) return null;
+    if (workflows[resourceId]) return workflows[resourceId];
+
+    setLoadingWorkflows((prev) => ({ ...prev, [resourceId]: true }));
+    try {
+      const leaveWorkflows = await workflowAPI.getInstances('leave', resourceId);
+      if (leaveWorkflows?.length > 0) {
+        const latestWorkflow = leaveWorkflows[0];
+        setWorkflows((prev) => ({ ...prev, [resourceId]: latestWorkflow }));
+        return latestWorkflow;
+      }
+      return null;
+    } catch (err) {
+      console.warn('Failed to fetch workflow for leave (possible id fields)', err, leaveRecord);
+      return null;
+    } finally {
+      setLoadingWorkflows((prev) => ({ ...prev, [resourceId]: false }));
+    }
+  }, [workflows]);
 
   const formatDate = (dateString) => {
     if (!dateString) return 'N/A';
@@ -360,7 +524,7 @@ export default function LeaveManagement() {
             <button
               onClick={fetchLeaveData}
               disabled={loading}
-              className="flex items-center space-x-2 px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors disabled:opacity-50"
+              className="flex items-center space-x-2 px-4 py-2 bg-[#181c52] text-white rounded-lg hover:bg-[#2c2f70] transition-colors disabled:opacity-50"
             >
               <svg className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
@@ -380,7 +544,7 @@ export default function LeaveManagement() {
             </svg>
           </div>
           <div className="ml-3">
-            <p className="text-sm text-blue-700 dark:text-blue-300">
+            <p className="text-sm text-[#181c52] dark:text-[#181c52]">
               <strong>Need to apply for leave?</strong> Use the HR Assistant chat (bottom right corner) to submit your leave application. The AI will guide you through the process step by step.
             </p>
           </div>
@@ -419,120 +583,244 @@ export default function LeaveManagement() {
         </div>
       )}
 
-      {/* Leave Balance Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        {Object.entries(leaveConfig || {}).map(([type, totalAllowed]) => {
-          const remaining = leaveBalance[type] ?? totalAllowed;
-          const taken = Math.max(0, (totalAllowed || 0) - (remaining || 0));
-
-          return (
-          <div
-            key={type}
-            onClick={() => handleViewPolicy(type)}
-            className="bg-white dark:bg-gray-800 shadow rounded-lg p-6 cursor-pointer hover:shadow-lg transition-shadow hover:border-teal-500 border-2 border-transparent"
-          >
-            <div className="flex justify-between items-start mb-4">
-              <h3 className="text-lg font-semibold dark:text-white">{type}</h3>
-              <FiInfo className="w-5 h-5 text-teal-600 dark:text-teal-400" title="Click to view policy details" />
-            </div>
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <p className="text-xs text-gray-600 dark:text-gray-400 uppercase">Taken</p>
-                <div className="text-2xl font-bold text-red-600 dark:text-red-400">{taken}</div>
-              </div>
-              <div>
-                <p className="text-xs text-gray-600 dark:text-gray-400 uppercase">Remaining</p>
-                <div className="text-2xl font-bold text-blue-600 dark:text-blue-400">{remaining}</div>
-              </div>
-            </div>
-            <p className="text-xs text-teal-600 dark:text-teal-400 mt-2 font-medium">Click to view policy →</p>
-          </div>
-        )})}
+      <div className="bg-white dark:bg-gray-800 shadow rounded-lg p-2">
+        <div className="flex flex-wrap gap-2">
+          {[
+            {
+              key: 'leave',
+              label: 'Leave',
+              activeClass: 'bg-[#ffbd59] text-gray-900',
+              inactiveClass: 'bg-white text-gray-800 hover:bg-[#ffbd59]/70'
+            },
+            {
+              key: 'requested',
+              label: 'Requested',
+              activeClass: 'bg-orange-300 text-orange-900',
+              inactiveClass: 'bg-white text-gray-800 hover:bg-orange-200'
+            },
+            {
+              key: 'approved',
+              label: 'Approved',
+              activeClass: 'bg-green-300 text-green-900',
+              inactiveClass: 'bg-white text-gray-800 hover:bg-green-200'
+            },
+            {
+              key: 'rejected',
+              label: 'Rejected',
+              activeClass: 'bg-red-500 text-white',
+              inactiveClass: 'bg-white text-gray-800 hover:bg-red-200'
+            }
+          ].map((tab) => (
+            <button
+              key={tab.key}
+              onClick={() => setActiveTab(tab.key)}
+              className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                activeTab === tab.key
+                  ? tab.activeClass
+                  : tab.inactiveClass
+              }`}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
       </div>
 
-      {/* Leave History */}
-      <div className="bg-white dark:bg-gray-800 shadow rounded-lg p-6">
-        <h3 className="text-lg font-semibold mb-4 dark:text-white">Leave History</h3>
-        {leaveHistory.length === 0 ? (
-          <div className="text-center py-8">
-            <p className="text-gray-500 dark:text-gray-400">No leave applications found.</p>
-            <p className="text-sm text-gray-400 dark:text-gray-500 mt-2">Use the HR Assistant chat to apply for leave.</p>
+      {activeTab === 'leave' && (
+        <>
+          {/* Leave Balance Cards */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            {Object.entries(leaveConfig || {}).map(([type, totalAllowed]) => {
+              const metrics = leaveBalance[type] || {};
+              const unit = metrics.unit || (isPermissionType(type) ? 'hours' : 'days');
+              const isAsRequired = Boolean(metrics.isAsRequired);
+              const isMonthlyRule = Boolean(metrics.monthlyRule);
+              const remaining = Number.isFinite(metrics.remaining) ? metrics.remaining : totalAllowed;
+              const taken = Number.isFinite(metrics.taken) ? metrics.taken : Math.max(0, (totalAllowed || 0) - (remaining || 0));
+              const monthlyTakenHours = Number.isFinite(metrics.monthlyTakenHours) ? metrics.monthlyTakenHours : 0;
+
+              return (
+              <div
+                key={type}
+                role="button"
+                tabIndex={0}
+                onClick={() => handleViewPolicy(type)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    handleViewPolicy(type);
+                  }
+                }}
+                className="bg-white dark:bg-gray-800 shadow rounded-lg p-6 hover:shadow-lg transition-shadow hover:border-[#ffbd59] border-2 border-transparent cursor-pointer"
+              >
+                <div className="flex justify-between items-start mb-4">
+                  <h3 className="text-lg font-semibold dark:text-white">{type}</h3>
+                  <FiInfo className="w-5 h-5 text-teal-600 dark:text-teal-400" title="Click to view policy details" />
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <p className="text-xs text-gray-600 dark:text-gray-400 uppercase">Taken</p>
+                    <div className="text-2xl font-bold text-red-600 dark:text-red-400">{taken}</div>
+                  </div>
+                  {!isAsRequired && (
+                    <div>
+                      <p className="text-xs text-gray-600 dark:text-gray-400 uppercase">Remaining</p>
+                      <div className="text-2xl font-bold text-blue-600 dark:text-blue-400">{remaining}</div>
+                    </div>
+                  )}
+                </div>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-2">Unit: {unit}</p>
+                {isAsRequired && (
+                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">As per required</p>
+                )}
+                {isMonthlyRule && (
+                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">Only 1 day per month. If used this month, you can apply again next month.</p>
+                )}
+                {isPermissionType(type) && (
+                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">Total hours taken this month: {monthlyTakenHours}</p>
+                )}
+                <p className="text-xs text-[#181c52] dark:text-[#181c52] mt-2 font-medium">Click to view policy →</p>
+              </div>
+            )})}
           </div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
-              <thead className="bg-gray-50 dark:bg-gray-700">
-                <tr>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Type</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Start Date</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">End Date</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Status</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Reason</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Workflow</th>
-                </tr>
-              </thead>
-              <tbody className="bg-white dark:bg-gray-800 divide-y divide-gray-200 dark:divide-gray-700">
-                {leaveHistory.map((leave, index) => {
+
+          {/* Leave History */}
+          {/* <div className="bg-white dark:bg-gray-800 shadow rounded-lg p-6">
+            <h3 className="text-lg font-semibold mb-4 dark:text-white">Leave History</h3>
+            {leaveHistory.length === 0 ? (
+              <div className="text-center py-8">
+                <p className="text-gray-500 dark:text-gray-400">No leave applications found.</p>
+                <p className="text-sm text-gray-400 dark:text-gray-500 mt-2">Use the HR Assistant chat to apply for leave.</p>
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
+                  <thead className="bg-gray-50 dark:bg-gray-700">
+                    <tr>
+                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Type</th>
+                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Start Date</th>
+                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">End Date</th>
+                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Status</th>
+                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Reason</th>
+                    </tr>
+                  </thead>
+                  <tbody className="bg-white dark:bg-gray-800 divide-y divide-gray-200 dark:divide-gray-700">
+                    {leaveHistory.map((leave, index) => {
+                      return (
+                        <React.Fragment key={leave.leave_id || index}>
+                          <tr>
+                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-white">{leave.leave_type}</td>
+                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-white">
+                              {new Date(leave.start_date).toLocaleDateString()}
+                            </td>
+                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-white">
+                              {new Date(leave.end_date).toLocaleDateString()}
+                            </td>
+                            <td className="px-6 py-4 whitespace-nowrap text-sm">
+                              <span className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full 
+                                ${leave.status === 'Approved' ? 'bg-green-100 dark:bg-green-900/30 text-green-800 dark:text-green-300' : 
+                                  leave.status === 'Pending' ? 'bg-yellow-100 dark:bg-yellow-900/30 text-yellow-800 dark:text-yellow-300' : 
+                                  'bg-red-100 dark:bg-red-900/30 text-red-800 dark:text-red-300'}`}>
+                                {leave.status}
+                              </span>
+                            </td>
+                            <td className="px-6 py-4 text-sm text-gray-900 dark:text-white">{leave.notes || 'No reason provided'}</td>
+                          </tr>
+                        </React.Fragment>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div> */}
+        </>
+      )}
+
+      {activeTab !== 'leave' && (
+        <div className="bg-white dark:bg-gray-800 shadow rounded-lg p-6">
+          {(() => {
+            const currentData = activeTab === 'requested' ? requestedLeaves : activeTab === 'approved' ? approvedLeaves : rejectedLeaves;
+            return currentData.length === 0 ? (
+              <div className="text-center py-10 text-gray-500 dark:text-gray-400">
+                No {activeTab} leave records found.
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {currentData.map((leave, index) => {
                   const resourceId = leave.leave_id ?? leave.id ?? leave.request_id ?? leave.uuid ?? null;
                   const workflow = resourceId ? workflows[resourceId] : null;
+                  const showWorkflowAction = ['approved', 'rejected'].includes(activeTab);
+
                   return (
-                    <React.Fragment key={leave.leave_id || index}>
-                      <tr>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-white">{leave.leave_type}</td>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-white">
-                          {new Date(leave.start_date).toLocaleDateString()}
-                        </td>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-white">
-                          {new Date(leave.end_date).toLocaleDateString()}
-                        </td>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm">
-                          <span className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full 
-                            ${leave.status === 'Approved' ? 'bg-green-100 dark:bg-green-900/30 text-green-800 dark:text-green-300' : 
-                              leave.status === 'Pending' ? 'bg-yellow-100 dark:bg-yellow-900/30 text-yellow-800 dark:text-yellow-300' : 
-                              'bg-red-100 dark:bg-red-900/30 text-red-800 dark:text-red-300'}`}>
-                            {leave.status}
-                          </span>
-                        </td>
-                        <td className="px-6 py-4 text-sm text-gray-900 dark:text-white">{leave.notes || 'No reason provided'}</td>
-                        <td className="px-6 py-4 text-sm">
-                          {workflow ? (
-                            <button
-                              onClick={() => setExpandedWorkflow(expandedWorkflow === (resourceId || leave.leave_id) ? null : (resourceId || leave.leave_id))}
-                              className="px-3 py-1 rounded bg-blue-600 text-white hover:bg-blue-700 text-xs"
-                            >
-                              View
-                            </button>
-                          ) : (
-                            // helpful affordance while debugging/when workflows are missing
-                            <span className="text-xs text-gray-400">No workflow</span>
-                          )}
-                        </td>
-                      </tr>
-                      {expandedWorkflow === (resourceId || leave.leave_id) && workflow && (
-                        <tr className="bg-gray-50 dark:bg-gray-700">
-                          <td colSpan="6" className="px-6 py-4">
-                            <div className="space-y-4">
-                              <WorkflowStatusCard workflow={workflow} />
-                              <div>
-                                <h4 className="font-semibold text-sm mb-2">Approval Steps</h4>
-                                <WorkflowDiagram steps={workflow.steps} compact={true} />
-                              </div>
-                              <div>
-                                <h4 className="font-semibold text-sm mb-2">History</h4>
-                                <WorkflowTimeline events={workflow.events} steps={workflow.steps} />
-                              </div>
-                            </div>
-                          </td>
-                        </tr>
-                      )}
-                    </React.Fragment>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
+                  <div key={leave.leave_id || leave.id || index} className="border border-gray-200 dark:border-gray-700 rounded-lg p-4 bg-gray-50 dark:bg-gray-700/40">
+                    <div className="flex items-start justify-between mb-2">
+                      <h4 className="font-semibold text-gray-900 dark:text-white">{leave.leave_type}</h4>
+                      <span className={`px-2 py-1 rounded text-xs font-medium ${
+                        normalizeStatus(leave.status) === 'APPROVED'
+                          ? 'bg-green-100 text-green-800'
+                          : ['PENDING', 'REQUESTED'].includes(normalizeStatus(leave.status))
+                          ? 'bg-yellow-100 text-yellow-800'
+                          : 'bg-red-100 text-red-800'
+                      }`}>
+                        {leave.status}
+                      </span>
+                    </div>
+                    <p className="text-sm text-gray-600 dark:text-gray-300">From: {new Date(leave.start_date).toLocaleDateString()}</p>
+                    <p className="text-sm text-gray-600 dark:text-gray-300">To: {new Date(leave.end_date).toLocaleDateString()}</p>
+                    <p className="text-sm text-gray-700 dark:text-gray-200 mt-2">{leave.notes || 'No reason provided'}</p>
+
+                    {showWorkflowAction && (
+                      <div className="mt-3">
+                        {resourceId ? (
+                          <button
+                            onClick={async () => {
+                              const targetId = resourceId || leave.leave_id;
+                              if (!targetId) return;
+
+                              if (expandedWorkflow === targetId) {
+                                setExpandedWorkflow(null);
+                                return;
+                              }
+
+                              const resolvedWorkflow = await fetchWorkflowForLeave(targetId, leave);
+                              if (resolvedWorkflow) {
+                                setExpandedWorkflow(targetId);
+                              } else {
+                                setPolicyMessage('Workflow details are not available right now.');
+                              }
+                            }}
+                            disabled={Boolean(loadingWorkflows[resourceId])}
+                            className="px-3 py-1 rounded bg-blue-600 text-white hover:bg-blue-700 text-xs"
+                          >
+                            {loadingWorkflows[resourceId] ? 'Loading...' : 'View Workflow'}
+                          </button>
+                        ) : (
+                          <span className="text-xs text-gray-400">No workflow</span>
+                        )}
+                      </div>
+                    )}
+
+                    {showWorkflowAction && expandedWorkflow === (resourceId || leave.leave_id) && workflow && (
+                      <div className="mt-4 space-y-3 border-t border-gray-200 dark:border-gray-600 pt-3">
+                        <WorkflowStatusCard workflow={workflow} />
+                        <div>
+                          <h4 className="font-semibold text-sm mb-2">Approval Steps</h4>
+                          <WorkflowDiagram steps={workflow.steps} compact={true} />
+                        </div>
+                        <div>
+                          <h4 className="font-semibold text-sm mb-2">History</h4>
+                          <WorkflowTimeline events={workflow.events} steps={workflow.steps} />
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )})}
+              </div>
+            );
+          })()}
+        </div>
+      )}
 
       {/* Policy Details Modal */}
       {showPolicyModal && selectedPolicy && (

@@ -501,7 +501,7 @@ export default function Payroll() {
         <div className="flex space-x-2">
           <button
             onClick={() => setShowModal(true)}
-            className="flex items-center space-x-1 px-3 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm"
+            className="flex items-center space-x-1 px-3 py-2 bg-[#181c52] text-white rounded-lg hover:bg-[#2c2f70] transition-colors text-sm"
           >
             <FiPlus className="w-4 h-4" />
             <span>Add Record</span>

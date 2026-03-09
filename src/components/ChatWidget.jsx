@@ -1330,6 +1330,7 @@ export default function ChatWidget() {
               `Leave Type: ${leaveData.leave_type}\n` +
               `Start Date: ${leaveData.start_date}\n` +
               `End Date: ${leaveData.end_date}\n` +
+              `${leaveData.permission_hours ? `Permission Hours: ${leaveData.permission_hours}\n` : ''}` +
               `Reason: ${leaveData.reason}\n\n` +
               `Your leave application has been submitted and is pending HR approval. You will be notified once it's reviewed.`,
         timestamp: new Date().toISOString()
@@ -2650,6 +2651,7 @@ export default function ChatWidget() {
                     <InlineLeaveForm
                       onSubmit={handleInlineLeaveFormSuccess}
                       onCancel={handleInlineLeaveFormCancel}
+                      leaveConfig={leaveConfig}
                     />
                   </div>
                 </div>

@@ -1062,7 +1062,7 @@ const [autoDetectImagePreview, setAutoDetectImagePreview] = useState(null);
         {activeTab === 'offers' && !showForm && (
           <button
             onClick={() => setShowForm(true)}
-            className="bg-[#ffbd59] text-white px-4 py-2 rounded-lg hover:bg-[#ffbd59] flex items-center gap-2"
+            className="bg-[#181c52] text-white px-4 py-2 rounded-lg hover:bg-[#2c2f70] flex items-center gap-2"
           >
             <FiPlus className="w-5 h-5" />
             Create Offer Letter

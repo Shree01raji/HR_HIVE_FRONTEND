@@ -14,7 +14,6 @@ import {
   FiCheck,
   FiX,
   FiPlay,
-  FiSquare,
   FiZap,
   FiPlus,
   FiUpload
@@ -125,32 +124,26 @@ export default function MyTasks() {
   const handleStartTracking = async (taskId) => {
     setActiveTaskLoading(true);
     try {
+      const targetTask = tasks.find(t => t.task_id === taskId);
+
+      // Accept task first by moving it to IN_PROGRESS before tracking.
+      if (targetTask && targetTask.status === 'PENDING') {
+        await taskTrackingAPI.updateTaskStatus(taskId, { status: 'IN_PROGRESS' });
+        setTasks((prev) => prev.map((t) => (
+          t.task_id === taskId ? { ...t, status: 'IN_PROGRESS' } : t
+        )));
+      }
+
       await setActiveTask(taskId);
       setActiveTaskId(taskId);
       setError(null);
       // Show success message
-      const task = tasks.find(t => t.task_id === taskId);
-      if (task) {
-        alert(`✅ Automatic time tracking started for "${task.title}"\n\nTime will be tracked automatically based on your activity. No buttons needed!`);
+      if (targetTask) {
+        alert(`✅ Task accepted and automatic time tracking started for "${targetTask.title}"\n\nTime will be tracked automatically based on your activity.`);
       }
     } catch (err) {
       console.error('Error starting task tracking:', err);
-      setError(err.response?.data?.detail || 'Failed to start automatic tracking');
-    } finally {
-      setActiveTaskLoading(false);
-    }
-  };
-
-  const handleStopTracking = async () => {
-    setActiveTaskLoading(true);
-    try {
-      await clearActiveTask();
-      setActiveTaskId(null);
-      setError(null);
-      alert('⏹️ Automatic time tracking stopped');
-    } catch (err) {
-      console.error('Error stopping task tracking:', err);
-      setError(err.response?.data?.detail || 'Failed to stop automatic tracking');
+      setError(err.response?.data?.detail || 'Failed to accept task and start automatic tracking');
     } finally {
       setActiveTaskLoading(false);
     }
@@ -237,7 +230,7 @@ export default function MyTasks() {
         </button> */}
         <button
           onClick={() => setShowAddModal(true)}
-          className="ml-3 flex items-center space-x-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors"
+          className="ml-3 flex items-center space-x-2 px-4 py-2 bg-[#181c52] text-white rounded-lg hover:bg-[#2c2f70] transition-colors"
         >
           <FiPlus className="w-5 h-5" />
           <span>Add Task</span>
@@ -357,12 +350,12 @@ export default function MyTasks() {
 
                   <div className="ml-4 flex flex-wrap items-center gap-2">
                     {/* Active Task Indicator */}
-                    {activeTaskId === task.task_id && (
+                    {/* {activeTaskId === task.task_id && (
                       <div className="px-3 py-1.5 bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400 rounded-lg flex items-center space-x-2 text-sm font-medium border border-green-300 dark:border-green-700">
                         <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
                         <span>Tracking Automatically</span>
                       </div>
-                    )}
+                    )} */}
                     
                     {task.status !== 'COMPLETED' && task.status !== 'CANCELLED' && (
                       <button
@@ -379,28 +372,24 @@ export default function MyTasks() {
                     
                     {/* Automatic Tracking Button (Primary) */}
                     {activeTaskId === task.task_id ? (
-                      <button
-                        onClick={handleStopTracking}
-                        disabled={activeTaskLoading}
-                        className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors flex items-center space-x-2 disabled:opacity-50"
-                      >
-                        <FiSquare className="w-4 h-4" />
-                        <span>{activeTaskLoading ? 'Stopping…' : 'Stop Tracking'}</span>
-                      </button>
+                      <div className="px-4 py-2 bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 rounded-lg flex items-center space-x-2 border border-blue-300 dark:border-blue-700">
+                        <FiZap className="w-4 h-4" />
+                        <span>In Progress</span>
+                      </div>
                     ) : (
                       <button
                         onClick={() => handleStartTracking(task.task_id)}
                         disabled={activeTaskLoading || activeTaskId !== null}
                         className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors flex items-center space-x-2 disabled:opacity-50 disabled:cursor-not-allowed"
-                        title={activeTaskId !== null ? "Stop current task tracking first" : "Start automatic time tracking"}
+                        title={activeTaskId !== null ? "Stop current task tracking first" : "Accept task and start automatic time tracking"}
                       >
                         <FiPlay className="w-4 h-4" />
-                        <span>{activeTaskLoading ? 'Starting…' : 'Start Tracking'}</span>
+                        <span>{activeTaskLoading ? 'Accepting…' : 'Accept'}</span>
                       </button>
                     )}
                     
                     {/* Manual Time Entry (Fallback) */}
-                    <button
+                    {/* <button
                       onClick={() => {
                         setSelectedTask(task);
                         setLogTimeForm({ start_time: '', end_time: '', notes: '' });
@@ -411,16 +400,16 @@ export default function MyTasks() {
                     >
                       <FiClock className="w-4 h-4" />
                       <span>Log Time</span>
-                    </button>
+                    </button> */}
                     
-                    <button
+                    {/* <button
                       onClick={() => handleSyncToTimesheet(task)}
                       disabled={syncingTaskId === task.task_id}
                       className="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors flex items-center space-x-2 disabled:opacity-50"
                     >
                       <FiClock className="w-4 h-4" />
                       <span>{syncingTaskId === task.task_id ? 'Syncing…' : 'Sync to Timesheet'}</span>
-                    </button>
+                    </button> */}
                   </div>
                 </div>
               </div>

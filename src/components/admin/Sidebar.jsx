@@ -392,8 +392,8 @@ const organizationItems = filteredMenuItems.filter(item =>
   item.path === '/admin/employees' ||
   item.path === '/admin/onboarding' ||
   item.path === '/admin/documents' ||
-  item.path === '/admin/team' ||
-  item.path === '/admin/branches'
+  item.path === '/admin/team' 
+  // item.path === '/admin/branches'
 );
 
 // 3. Leave Management

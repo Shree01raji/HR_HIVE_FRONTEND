@@ -194,7 +194,7 @@ export default function AdminDocuments() {
         </div>
         <button
           onClick={fetchApprovedDocuments}
-          className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600"
+          className="px-4 py-2 bg-[#181c52] text-white rounded-lg hover:bg-[#2c2f70]"
         >
           Refresh
         </button>

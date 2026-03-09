@@ -585,7 +585,7 @@ export default function TaskManagement() {
                 setCreateMode('single');
                 setEditingTask(null);
               }}
-              className="flex items-center space-x-2 px-6 py-3 bg-gradient-to-r from-blue-600 to-indigo-600 text-white rounded-lg shadow-lg hover:from-blue-700 hover:to-indigo-700 transition-all duration-200 transform hover:scale-105"
+              className="flex items-center space-x-2 px-6 py-3 bg-[#181c52] to-indigo-600 text-white rounded-lg shadow-lg hover:from-[#2c2f70] hover:to-indigo-700 transition-all duration-200 transform hover:scale-105"
             >
               <FiPlus className="w-5 h-5" />
               <span>Create Task</span>

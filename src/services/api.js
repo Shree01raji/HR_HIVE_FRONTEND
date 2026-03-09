@@ -148,6 +148,11 @@ api.interceptors.response.use(
     const selectedOrg = localStorage.getItem('selectedOrganization');
     const url = error.config?.url || 'unknown';
     const status = error.response?.status || 'NO_RESPONSE';
+
+    // Suppress expected 403 for settings endpoint when role has no settings access
+    if (status === 403 && (url.includes('/settings/') || url.endsWith('/settings'))) {
+      return Promise.reject(error);
+    }
     
     // Suppress 404 errors for /projects endpoint (might not be available in all orgs)
     if (status === 404 && url.includes('/projects')) {
@@ -625,6 +630,43 @@ export const employeeAPI = {
     return response.data;
   },
 };
+
+// Super Admin API
+export const superAdminAPI = {
+  getModules: async () => {
+    const res = await api.get('/settings/super/modules');
+    return res.data;
+  },
+  updateModules: async (payload) => {
+    const res = await api.put('/settings/super/modules', payload);
+    return res.data;
+  },
+  getModuleConfig: async (key) => {
+    const res = await api.get(`/settings/super/modules/${key}`);
+    return res.data;
+  },
+  updateModuleConfig: async (key, payload) => {
+    const res = await api.put(`/settings/super/modules/${key}`, payload);
+    return res.data;
+  }
+};
+ 
+// RBAC / User module access API
+export const rbacAPI = {
+  getUserModuleAccess: async (userId, moduleKey) => {
+    const params = { user_id: userId, module: moduleKey }
+    const res = await api.get('/rbac/user-module-access', { params })
+    return res.data
+  },
+  assignUserModuleAccess: async (payload) => {
+    const res = await api.post('/rbac/user-module-access', payload)
+    return res.data
+  },
+  revokeUserModuleAccess: async ({ user_id, module, organization_id=null }) => {
+    const res = await api.delete('/rbac/user-module-access', { data: { user_id, module, organization_id } })
+    return res.data
+  }
+}
 
 // Leave API
 export const leaveAPI = {

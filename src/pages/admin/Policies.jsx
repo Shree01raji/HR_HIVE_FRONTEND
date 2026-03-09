@@ -276,7 +276,7 @@ export default function Policies() {
             setFormData({ title: '', description: '', category: 'Policy', file: null });
             setShowUploadModal(true);
           }}
-          className="bg-blue-500 text-white px-4 py-2 rounded-lg hover:bg-blue-600 transition-colors text-sm font-medium flex items-center gap-2"
+          className="bg-[#181c52] text-white px-4 py-2 rounded-lg hover:bg-[#2c2f70] transition-colors text-sm font-medium flex items-center gap-2"
         >
           <FiPlus className="w-4 h-4" />
           Add Policy

@@ -21,11 +21,19 @@ export default function LeavePolicies() {
         api.get('/settings/leave-config').catch(() => ({ data: { leave_config: {} } }))
       ]);
 
+      const normalizeLeaveType = (value) =>
+        String(value || '')
+          .trim()
+          .toLowerCase()
+          .replace(/[_-]+/g, ' ')
+          .replace(/\s+/g, ' ');
+
       const configuredLeaveTypes = Object.keys(leaveConfigResponse?.data?.leave_config || {});
+      const configuredLeaveTypeSet = new Set(configuredLeaveTypes.map(normalizeLeaveType));
       const safePolicies = Array.isArray(policiesData) ? policiesData : [];
 
       const filteredPolicies = configuredLeaveTypes.length > 0
-        ? safePolicies.filter((policy) => configuredLeaveTypes.includes(policy?.leave_type))
+        ? safePolicies.filter((policy) => configuredLeaveTypeSet.has(normalizeLeaveType(policy?.leave_type)))
         : safePolicies;
 
       setPolicies(filteredPolicies);

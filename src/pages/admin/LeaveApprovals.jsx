@@ -216,7 +216,7 @@ export default function LeaveApprovals() {
         </div>
         <button
           onClick={fetchLeaves}
-          className="px-3 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm"
+          className="px-3 py-2 bg-[#181c52] text-white rounded-lg hover:bg-[#2c2f70] transition-colors text-sm"
         >
           Refresh
         </button>

@@ -8,6 +8,14 @@
  */
 export async function sendTrackerConfig() {
   try {
+    // Tracker bridge runs with the desktop tracker app; skip in normal web browsers.
+    const isElectron = typeof window !== 'undefined' &&
+      typeof window.navigator?.userAgent === 'string' &&
+      window.navigator.userAgent.includes('Electron');
+    if (!isElectron) {
+      return { success: false, reason: 'tracker_not_available_in_browser' };
+    }
+
     // Get config from localStorage
     const token = localStorage.getItem('token');
     const organizationSlug = localStorage.getItem('selectedOrganization');
@@ -132,7 +140,6 @@ export async function sendTrackerConfigWithRetry(maxRetries = 3, delayMs = 2000)
     
     // If tracker is not running, wait and retry
     if (result.reason === 'tracker_not_running' && i < maxRetries - 1) {
-      console.log(`[Tracker Config] Retry ${i + 1}/${maxRetries} in ${delayMs}ms...`);
       await new Promise(resolve => setTimeout(resolve, delayMs));
       continue;
     }

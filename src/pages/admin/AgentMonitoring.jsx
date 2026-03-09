@@ -134,7 +134,7 @@ const AgentMonitoring = () => {
         <button
           onClick={fetchAgentData}
           disabled={refreshing}
-          className="flex items-center space-x-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
+          className="flex items-center space-x-2 px-4 py-2 bg-[#181c52] text-white rounded-lg hover:bg-[#2c2f70] disabled:opacity-50"
         >
           <FiRefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`} />
           <span>Refresh</span>

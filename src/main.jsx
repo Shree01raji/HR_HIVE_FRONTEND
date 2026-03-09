@@ -221,7 +221,7 @@ function RequireAuth({ children, allowedRoles = [] }) {
   
   if (allowedRoles.length > 0 && !allowedRoles.includes(user.role) && !isAccountant) {
     // Redirect to appropriate dashboard if role doesn't match
-    if (user.role === 'ADMIN') {
+    if (user.role === 'ADMIN' || user.role === 'SUPER_ADMIN') {
       if (isOrganizationAdmin) {
         return <Navigate to="/admin/organizations" replace />;
       } else {
@@ -272,7 +272,7 @@ function RequireNotOrganizationAdmin({ children }) {
                                (user.employee_id && user.department === null);
 
   // If organization admin tries to access regular admin routes, redirect to organizations
-  if (isOrganizationAdmin && user.role === 'ADMIN') {
+  if (isOrganizationAdmin && (user.role === 'ADMIN' || user.role === 'SUPER_ADMIN')) {
     return <Navigate to="/admin/organizations" replace />;
   }
 
@@ -294,12 +294,12 @@ function RequireAdminOrHRAdmin({ children }) {
                                user.employee_id === 0 ||
                                (user.employee_id && user.department === null);
 
-  if (isOrganizationAdmin && user.role === 'ADMIN') {
+  if (isOrganizationAdmin && (user.role === 'ADMIN' || user.role === 'SUPER_ADMIN')) {
     return <Navigate to="/admin/organizations" replace />;
   }
 
   const userRole = user.role?.toUpperCase() || '';
-  const isAdmin = userRole === 'ADMIN' || userRole === 'HR_ADMIN' || userRole === 'HR_MANAGER';
+  const isAdmin = userRole === 'ADMIN' || userRole === 'SUPER_ADMIN' || userRole === 'HR_ADMIN' || userRole === 'HR_MANAGER';
   // HR_MANAGER always gets full admin access, not department-restricted
   // Department filtering is disabled - all HR managers have full access
   const isDepartmentHR = false; // Always false - HR managers use admin panel
@@ -307,7 +307,7 @@ function RequireAdminOrHRAdmin({ children }) {
   // HR_MANAGER now has full admin access, so no path restrictions needed
   // If user is not an admin/HR_ADMIN/HR_MANAGER and trying to access admin-only routes, redirect
   if (!isAdmin) {
-    return <Navigate to="/admin" replace />;
+    return <Navigate to="/" replace />;
   }
 
   return children;
@@ -326,7 +326,7 @@ function RequireAccountant({ children }) {
 
   if (!isAccountant) {
     // Redirect to appropriate dashboard based on role
-    if (user.role === 'ADMIN') {
+    if (user.role === 'ADMIN' || user.role === 'SUPER_ADMIN') {
       const isOrganizationAdmin = localStorage.getItem('isOrganizationAdmin') === 'true' ||
                                    !user.employee_id || 
                                    user.employee_id === 0 ||
@@ -372,7 +372,7 @@ function RequireEmployeeAccess({ children }) {
   // Allow access if user is EMPLOYEE, ACCOUNTANT, or ADMIN/HR_MANAGER with employee_id
   if (!isEmployee && !isAccountant && !isHRWithEmployeeAccess) {
     // Redirect to appropriate dashboard based on role
-    if (user.role === 'ADMIN') {
+    if (user.role === 'ADMIN' || user.role === 'SUPER_ADMIN') {
       const isOrganizationAdmin = localStorage.getItem('isOrganizationAdmin') === 'true' ||
                                    !user.employee_id || 
                                    user.employee_id === 0 ||
@@ -443,7 +443,7 @@ function Home() {
   
   // Check admin verification for ADMIN and HR_MANAGER
   const userRole = user.role?.toUpperCase();
-  const isAdmin = userRole === 'ADMIN' || userRole === 'HR_MANAGER' || userRole === 'HR_ADMIN';
+  const isAdmin = userRole === 'ADMIN' || userRole === 'SUPER_ADMIN' || userRole === 'HR_MANAGER' || userRole === 'HR_ADMIN';
   
   if (isAdmin) {
     // Check if admin verification is required
@@ -467,7 +467,7 @@ function Home() {
     }
     
     // Verification complete, proceed with normal redirect
-    if (user.role === 'ADMIN') {
+    if (user.role === 'ADMIN' || user.role === 'SUPER_ADMIN') {
       // Check if this is Organization Admin
       const isOrganizationAdmin = localStorage.getItem('isOrganizationAdmin') === 'true' ||
                                  !user.employee_id || 
@@ -543,7 +543,7 @@ function App() {
           <Route
             path="/admin"
             element={
-              <RequireAuth allowedRoles={['ADMIN', 'HR_MANAGER']}>
+              <RequireAuth allowedRoles={['ADMIN', 'SUPER_ADMIN', 'HR_MANAGER']}>
                 <RequireAdminVerification>
                   <RequireNotOrganizationAdmin>
                     <AdminLayout />
@@ -599,7 +599,7 @@ function App() {
           <Route
             path="/admin/organizations"
             element={
-              <RequireAuth allowedRoles={['ADMIN']}>
+              <RequireAuth allowedRoles={['ADMIN', 'SUPER_ADMIN']}>
                 <RequireAdminVerification>
                   <OrganizationsAdminLayout />
                 </RequireAdminVerification>

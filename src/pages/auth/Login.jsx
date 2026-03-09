@@ -231,7 +231,7 @@ export default function Login() {
                                    (response.user.employee_id && response.user.department === null);
       
       // For organization admins, skip organization code and go directly to organizations page
-      if (isOrganizationAdmin && response.user.role === 'ADMIN') {
+      if (isOrganizationAdmin && (response.user.role === 'ADMIN' || response.user.role === 'SUPER_ADMIN')) {
         localStorage.removeItem('tempUserData');
         navigate('/admin/organizations');
         return;
@@ -294,7 +294,7 @@ export default function Login() {
     localStorage.removeItem('tempUserData');
     
     // Check if user is ADMIN or HR_MANAGER - show verification page
-    if (tempUserData.role === 'ADMIN' || tempUserData.role === 'HR_MANAGER') {
+    if (tempUserData.role === 'ADMIN' || tempUserData.role === 'SUPER_ADMIN' || tempUserData.role === 'HR_MANAGER') {
       setShowAdminVerification(true);
       return;
     }
@@ -320,7 +320,7 @@ export default function Login() {
     const tempUserData = JSON.parse(localStorage.getItem('tempUserData') || '{}');
     const userRole = tempUserData.role || user?.role;
     
-    if (userRole === 'ADMIN') {
+    if (userRole === 'ADMIN' || userRole === 'SUPER_ADMIN') {
       // Check if this is Organization Admin
       const isOrganizationAdmin = localStorage.getItem('isOrganizationAdmin') === 'true' ||
                                  !tempUserData.employee_id || 
@@ -362,7 +362,7 @@ export default function Login() {
   // If user is authenticated and admin/HR but verification screen not shown, redirect to show it
   if (user) {
     const userRole = user.role?.toUpperCase();
-    const isAdmin = userRole === 'ADMIN' || userRole === 'HR_MANAGER' || userRole === 'HR_ADMIN';
+    const isAdmin = userRole === 'ADMIN' || userRole === 'SUPER_ADMIN' || userRole === 'HR_MANAGER' || userRole === 'HR_ADMIN';
     const adminVerified = localStorage.getItem('adminVerified') === 'true';
     
     if (isAdmin && !adminVerified && !showAdminVerification) {
@@ -558,14 +558,14 @@ export default function Login() {
               </>
             )}
 
-            <div className="mt-4 text-center">
+            {/* <div className="mt-4 text-center">
               <p className="text-sm text-gray-600">
                 Don't have an account?{' '}
                 <Link to="/register" className="font-medium text-[#1e3a5f] hover:text-[#2a4a6f] transition-colors">
                   Register here
                 </Link>
               </p>
-            </div>
+            </div> */}
           </form>
         </div>
       </div>

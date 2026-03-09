@@ -1,6 +1,25 @@
 import React, { useState, useEffect } from 'react';
 import { teamAPI } from '../../../services/api';
-import { FiGitBranch, FiUser, FiUsers, FiSearch, FiFilter } from 'react-icons/fi';
+import { FiGitBranch, FiUsers, FiSearch, FiFilter, FiChevronDown, FiChevronRight, FiMail, FiPhone, FiBriefcase, FiHash } from 'react-icons/fi';
+
+function flattenEmployees(employees) {
+  if (!employees?.length) return [];
+  let list = [];
+  for (const employee of employees) {
+    list.push(employee);
+    if (employee.direct_reports?.length) {
+      list = list.concat(flattenEmployees(employee.direct_reports));
+    }
+  }
+  return list;
+}
+
+function formatDate(dateString) {
+  if (!dateString) return 'N/A';
+  const date = new Date(dateString);
+  if (Number.isNaN(date.getTime())) return 'N/A';
+  return date.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+}
 
 export default function ReportingStructure() {
   const [data, setData] = useState([]);
@@ -9,6 +28,7 @@ export default function ReportingStructure() {
   const [selectedDepartment, setSelectedDepartment] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
   const [expandedNodes, setExpandedNodes] = useState(new Set());
+  const [selectedEmployee, setSelectedEmployee] = useState(null);
 
   useEffect(() => {
     fetchData();
@@ -25,6 +45,13 @@ export default function ReportingStructure() {
         const rootIds = result.map(emp => emp.employee_id);
         setExpandedNodes(new Set(rootIds));
       }
+
+      const allEmployees = flattenEmployees(Array.isArray(result) ? result : [result]);
+      setSelectedEmployee((prev) => {
+        if (!allEmployees.length) return null;
+        if (!prev?.employee_id) return allEmployees[0];
+        return allEmployees.find((employee) => employee.employee_id === prev.employee_id) || allEmployees[0];
+      });
     } catch (err) {
       console.error('Error fetching reporting structure:', err);
       setError(err.response?.data?.detail || 'Failed to load reporting structure');
@@ -43,93 +70,91 @@ export default function ReportingStructure() {
     setExpandedNodes(newExpanded);
   };
 
-  const renderNode = (node, level = 0) => {
+  const nodeMatchesSearch = (node, term) => {
+    if (!term) return true;
+    const query = term.toLowerCase();
+    const name = `${node.employee_name || ''}`.toLowerCase();
+    const designation = `${node.designation || ''}`.toLowerCase();
+    const department = `${node.department || ''}`.toLowerCase();
+
+    if (name.includes(query) || designation.includes(query) || department.includes(query)) {
+      return true;
+    }
+
+    return (node.direct_reports || []).some((report) => nodeMatchesSearch(report, term));
+  };
+
+  const renderNode = (node, isChild = false) => {
     const isExpanded = expandedNodes.has(node.employee_id);
     const hasReports = node.direct_reports && node.direct_reports.length > 0;
+    const isSelected = selectedEmployee?.employee_id === node.employee_id;
 
-    // Filter by search term
-    const name = `${node.employee_name || ''}`.toLowerCase();
-    const matchesSearch = !searchTerm || name.includes(searchTerm.toLowerCase()) ||
-      node.designation?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      node.department?.toLowerCase().includes(searchTerm.toLowerCase());
-
-    if (!matchesSearch && level === 0) {
+    if (!nodeMatchesSearch(node, searchTerm)) {
       return null;
     }
 
-    return (
-      <div key={node.employee_id} className="relative">
-        <div className="flex items-start" style={{ marginLeft: `${level * 48}px` }}>
-          {/* Tree connector lines */}
-          {level > 0 && (
-            <div className="absolute left-0 top-0 bottom-0 flex flex-col items-center" style={{ left: `${level * 48 - 24}px`, width: '24px' }}>
-              <div className="w-px h-6 bg-gray-300"></div>
-              <div className="w-3 h-px bg-gray-300"></div>
-            </div>
-          )}
-          
-          {/* Employee Card */}
-          <div className="flex-1 bg-white rounded-lg shadow-sm hover:shadow-md transition-all border-l-4 border-blue-500 mb-3">
-            <div className="p-4">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center space-x-3 flex-1 min-w-0">
-                  {/* Avatar */}
-                  <div className="w-10 h-10 bg-gradient-to-br from-blue-500 to-blue-600 rounded-full flex items-center justify-center flex-shrink-0">
-                    <span className="text-white font-semibold text-xs">
-                      {node.employee_name?.[0]?.toUpperCase() || '?'}
-                    </span>
-                  </div>
-                  
-                  {/* Employee Info */}
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center space-x-2 mb-0.5">
-                      <h3 className="font-semibold text-gray-900 text-sm truncate">
-                        {node.employee_name || 'Unknown'}
-                      </h3>
-                      {node.total_reports > 0 && (
-                        <span className="px-1.5 py-0.5 bg-blue-100 text-blue-700 rounded text-xs font-medium flex-shrink-0">
-                          {node.total_reports}
-                        </span>
-                      )}
-                    </div>
-                    <p className="text-xs text-gray-600 truncate">
-                      {node.designation || 'N/A'}
-                    </p>
-                    {node.department && (
-                      <p className="text-xs text-gray-400 truncate">
-                        {node.department}
-                      </p>
-                    )}
-                  </div>
-                </div>
+    const visibleReports = (node.direct_reports || []).filter((report) => nodeMatchesSearch(report, searchTerm));
 
-                {/* Expand/Collapse Button */}
-                {hasReports && (
-                  <button
-                    onClick={() => toggleNode(node.employee_id)}
-                    className="ml-2 p-1.5 hover:bg-gray-100 rounded transition-colors flex-shrink-0"
-                    title={isExpanded ? 'Collapse' : 'Expand'}
-                  >
-                    {isExpanded ? (
-                      <FiUsers className="w-4 h-4 text-blue-600" />
-                    ) : (
-                      <FiUsers className="w-4 h-4 text-gray-400" />
-                    )}
-                  </button>
-                )}
-              </div>
-            </div>
+    return (
+      <div key={node.employee_id} className="flex flex-col items-center min-w-[240px]">
+        {isChild && <div className="w-0.5 h-5 bg-gray-300" />}
+
+        <div
+          className={`w-56 flex items-center gap-3 p-3 bg-white rounded-lg border transition-all cursor-pointer ${
+            isSelected
+              ? 'border-blue-400 shadow-md ring-2 ring-blue-100'
+              : 'border-gray-200 shadow-sm hover:shadow-md'
+          }`}
+          onClick={() => setSelectedEmployee(node)}
+        >
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              if (hasReports) toggleNode(node.employee_id);
+            }}
+            className={`w-7 h-7 rounded-md flex items-center justify-center transition-colors ${
+              hasReports ? 'text-gray-500 hover:bg-gray-100' : 'text-transparent cursor-default'
+            }`}
+            aria-label={hasReports ? (isExpanded ? 'Collapse node' : 'Expand node') : 'No direct reports'}
+            disabled={!hasReports}
+          >
+            {hasReports ? (isExpanded ? <FiChevronDown className="w-4 h-4" /> : <FiChevronRight className="w-4 h-4" />) : <FiChevronRight className="w-4 h-4" />}
+          </button>
+
+          <div className="w-10 h-10 bg-blue-100 rounded-full flex items-center justify-center flex-shrink-0">
+            <span className="text-blue-600 font-semibold text-sm">
+              {node.employee_name?.[0]?.toUpperCase() || '?'}
+            </span>
           </div>
+
+          <div className="flex-1 min-w-0">
+            <p className="font-semibold text-gray-800 truncate">{node.employee_name || 'Unknown'}</p>
+            <p className="text-sm text-gray-600 truncate">{node.designation || 'N/A'}</p>
+            {node.department && (
+              <p className="text-xs text-gray-500 truncate">{node.department}</p>
+            )}
+          </div>
+
+          {hasReports && (
+            <span className="text-xs px-2 py-1 rounded-full bg-gray-100 text-gray-600 font-medium">
+              {node.total_reports || visibleReports.length}
+            </span>
+          )}
         </div>
 
-        {/* Direct Reports */}
-        {isExpanded && hasReports && (
-          <div className="relative">
-            {node.direct_reports.map((report) => (
-              <div key={report.employee_id}>
-                {renderNode(report, level + 1)}
-              </div>
-            ))}
+        {isExpanded && hasReports && visibleReports.length > 0 && (
+          <div className="flex flex-col items-center mt-1">
+            <div className="w-0.5 h-6 bg-gray-300" />
+            <div className="h-0.5 bg-gray-300 mb-2" style={{ width: `${Math.max(visibleReports.length * 240, 240)}px` }} />
+
+            <div className="flex flex-wrap justify-center gap-6">
+              {visibleReports.map((report) => (
+                <div key={report.employee_id} className="flex flex-col items-center">
+                  {renderNode(report, true)}
+                </div>
+              ))}
+            </div>
           </div>
         )}
       </div>
@@ -207,7 +232,7 @@ export default function ReportingStructure() {
               <select
                 value={selectedDepartment}
                 onChange={(e) => setSelectedDepartment(e.target.value)}
-                className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="border border-gray-300 rounded-lg px-7 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
               >
                 <option value="">All Departments</option>
                 {departments.map((dept) => (
@@ -221,14 +246,96 @@ export default function ReportingStructure() {
         </div>
       </div>
 
-      {/* Reporting Structure Tree */}
-      <div className="bg-gray-50 rounded-lg p-6">
-        <div className="space-y-6">
-          {data.map((root) => (
-            <div key={root.employee_id} className="relative">
-              {renderNode(root, 0)}
+      {/* Reporting Structure Tree + Details */}
+      <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
+        <div className="xl:col-span-7 bg-gray-50 rounded-lg p-6 overflow-x-auto">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-lg font-semibold text-gray-800">Reporting Tree</h3>
+            <span className="text-xs text-gray-500">Select a node to view details</span>
+          </div>
+
+          <div className="min-w-max">
+            <div className="flex flex-wrap justify-center gap-8">
+              {data.map((root) => (
+                <div key={root.employee_id} className="flex flex-col items-center">
+                  {renderNode(root)}
+                </div>
+              ))}
             </div>
-          ))}
+          </div>
+        </div>
+
+        <div className="xl:col-span-5 bg-white border border-gray-200 rounded-lg p-6">
+          <h3 className="text-lg font-semibold text-gray-800 mb-4">Employee Details</h3>
+
+          {!selectedEmployee ? (
+            <div className="text-sm text-gray-500">Select an employee from the tree to view details.</div>
+          ) : (
+            <>
+              <div className="flex items-center gap-3 mb-5">
+                <div className="w-12 h-12 bg-blue-100 rounded-full flex items-center justify-center">
+                  <span className="text-blue-600 font-semibold text-base">
+                    {selectedEmployee.employee_name?.[0]?.toUpperCase() || '?'}
+                  </span>
+                </div>
+                <div>
+                  <p className="font-semibold text-gray-900">{selectedEmployee.employee_name || 'Unknown'}</p>
+                  <p className="text-sm text-gray-600">{selectedEmployee.designation || 'N/A'}</p>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
+                  <p className="text-xs text-gray-500 mb-1">Employee ID</p>
+                  <p className="text-sm font-medium text-gray-900 flex items-center gap-2">
+                    <FiHash className="w-4 h-4 text-gray-400" />
+                    {selectedEmployee.employee_id || 'N/A'}
+                  </p>
+                </div>
+
+                <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
+                  <p className="text-xs text-gray-500 mb-1">Department</p>
+                  <p className="text-sm font-medium text-gray-900">{selectedEmployee.department || 'N/A'}</p>
+                </div>
+
+                <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
+                  <p className="text-xs text-gray-500 mb-1">Designation</p>
+                  <p className="text-sm font-medium text-gray-900 flex items-center gap-2">
+                    <FiBriefcase className="w-4 h-4 text-gray-400" />
+                    {selectedEmployee.designation || 'N/A'}
+                  </p>
+                </div>
+
+                <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
+                  <p className="text-xs text-gray-500 mb-1">Direct Reports</p>
+                  <p className="text-sm font-medium text-gray-900">
+                    {selectedEmployee.total_reports ?? selectedEmployee.direct_reports?.length ?? 0}
+                  </p>
+                </div>
+
+                <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 sm:col-span-2">
+                  <p className="text-xs text-gray-500 mb-1">Email</p>
+                  <p className="text-sm font-medium text-gray-900 flex items-center gap-2 break-all">
+                    <FiMail className="w-4 h-4 text-gray-400" />
+                    {selectedEmployee.email || 'N/A'}
+                  </p>
+                </div>
+
+                <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
+                  <p className="text-xs text-gray-500 mb-1">Phone</p>
+                  <p className="text-sm font-medium text-gray-900 flex items-center gap-2">
+                    <FiPhone className="w-4 h-4 text-gray-400" />
+                    {selectedEmployee.phone || 'N/A'}
+                  </p>
+                </div>
+
+                <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
+                  <p className="text-xs text-gray-500 mb-1">Joining Date</p>
+                  <p className="text-sm font-medium text-gray-900">{formatDate(selectedEmployee.join_date)}</p>
+                </div>
+              </div>
+            </>
+          )}
         </div>
       </div>
     </div>

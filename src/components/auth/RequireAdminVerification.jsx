@@ -13,9 +13,9 @@ export default function RequireAdminVerification({ children }) {
   useEffect(() => {
     const checkVerification = async () => {
       const token = localStorage.getItem('token');
-      // Check for ADMIN and HR_MANAGER users
+      // Check for admin users (including super admin)
       const userRole = user?.role?.toUpperCase();
-      const isAdminOrHR = userRole === 'ADMIN' || userRole === 'HR_MANAGER' || userRole === 'HR_ADMIN';
+      const isAdminOrHR = userRole === 'ADMIN' || userRole === 'SUPER_ADMIN' || userRole === 'HR_MANAGER' || userRole === 'HR_ADMIN';
       
       if (!user || !isAdminOrHR || !token) {
         setChecking(false);
@@ -116,7 +116,7 @@ export default function RequireAdminVerification({ children }) {
   }
 
   const userRole = user?.role?.toUpperCase();
-  const isAdminOrHR = userRole === 'ADMIN' || userRole === 'HR_MANAGER' || userRole === 'HR_ADMIN';
+  const isAdminOrHR = userRole === 'ADMIN' || userRole === 'SUPER_ADMIN' || userRole === 'HR_MANAGER' || userRole === 'HR_ADMIN';
   
   if (!user || !isAdminOrHR) {
     return <Navigate to="/login" replace />;

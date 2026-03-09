@@ -303,7 +303,7 @@ export default function QuestionBank() {
         <div className="flex gap-3">
           <button
             onClick={() => setShowGenerateModal(true)}
-            className="px-4 py-2 bg-gradient-to-r from-blue-600 to-indigo-600 text-white rounded-lg hover:shadow-lg transition-all flex items-center gap-2"
+            className="px-4 py-2 bg-[#181c52] to-indigo-600 text-white rounded-lg hover:shadow-lg transition-all flex items-center gap-2"
           >
             <FiLayers className="w-5 h-5" />
             Generate Questions

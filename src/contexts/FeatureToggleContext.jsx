@@ -91,13 +91,6 @@ export const FeatureToggleProvider = ({ children }) => {
         ? rawFeaturesConfig 
         : {};
       
-      // DEBUG: Log the full response to see what we're getting
-      console.log('🔍 [FeatureToggle] Full API response:', response.data);
-      console.log('🔍 [FeatureToggle] Raw features_config from API:', rawFeaturesConfig);
-      console.log('🔍 [FeatureToggle] Processed features_config:', featuresConfig);
-      console.log('🔍 [FeatureToggle] features_config type:', typeof featuresConfig);
-      console.log('🔍 [FeatureToggle] features_config is null?', rawFeaturesConfig === null);
-      console.log('🔍 [FeatureToggle] features_config keys:', featuresConfig ? Object.keys(featuresConfig) : 'N/A');
     
       // Store the original backend config to check key existence
       setBackendFeaturesConfig(featuresConfig);
@@ -122,20 +115,11 @@ export const FeatureToggleProvider = ({ children }) => {
         mergedFeatures = { ...defaultFeatures };
       }
       
-      console.log('📋 Feature toggles loaded from backend:', featuresConfig);
-      console.log('📋 Backend config keys:', Object.keys(featuresConfig));
-      console.log('📋 Merged features (after preserving false values):', mergedFeatures);
-      console.log('📋 Has backend config:', hasBackendConfig);
-      
-      // Debug: Log specific feature checks
-      console.log('📋 enable_recruitment in backend:', featuresConfig.enable_recruitment);
-      console.log('📋 enable_analytics in backend:', featuresConfig.enable_analytics);
-      
       setFeatures(mergedFeatures);
     } catch (err) {
       // Handle 403 (Forbidden) gracefully - employees don't have access to settings
       if (err.response?.status === 403) {
-        console.log('ℹ️ [FeatureToggle] User does not have access to settings (403) - using default config');
+        // Expected for roles without settings access; fallback silently.
         setError(null); // Don't show error for permission issues
         // On 403, default to all features enabled (for employees)
         setFeatures(defaultFeatures);
@@ -196,7 +180,6 @@ export const FeatureToggleProvider = ({ children }) => {
   const isEnabled = useCallback((featureKey) => {
     if (!features) {
       // Default to enabled during loading or if not fetched
-      console.log(`🔍 [isEnabled] ${featureKey}: features not loaded yet, returning true (default)`);
       return true;
     }
     
@@ -212,10 +195,8 @@ export const FeatureToggleProvider = ({ children }) => {
       if (Object.prototype.hasOwnProperty.call(backendFeaturesConfig, featureKey)) {
         const backendValue = backendFeaturesConfig[featureKey];
         const isEnabledResult = backendValue === true;
-        console.log(`🔍 [isEnabled] ${featureKey}: backend has explicit config, value=${backendValue}, result=${isEnabledResult}`);
         return isEnabledResult;
       }
-      console.log(`🔍 [isEnabled] ${featureKey}: backend has config but key is missing -> disabled`);
       return false;
     }
     
@@ -224,7 +205,6 @@ export const FeatureToggleProvider = ({ children }) => {
     const featureValue = features[featureKey];
     // Return false only if explicitly false, otherwise return true (default enabled)
     const result = featureValue !== false && featureValue !== null;
-    console.log(`🔍 [isEnabled] ${featureKey}: no backend config, merged value=${featureValue}, result=${result}`);
     return result;
   }, [features, backendFeaturesConfig]);
 
