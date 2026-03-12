@@ -356,9 +356,9 @@ export default function ManagerDashboard() {
                 link="/manager/leaves"
               />
               <QuickActionCard
-                title="Review Timesheets"
+                title="Review Attendance"
                 icon={<FiCalendar className="w-5 h-5" />}
-                link="/manager/timesheet"
+                link="/manager/attendance"
               />
               <QuickActionCard
                 title="Monitor Chats"

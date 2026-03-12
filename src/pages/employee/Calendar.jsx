@@ -1,11 +1,12 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import { FiChevronLeft, FiChevronRight } from "react-icons/fi";
-import { calendarAPI } from '../../services/api';
+import api, { calendarAPI } from '../../services/api';
 import { useRealTime } from '../../contexts/RealTimeContext';
 
 const Calendar = () => {
   const [currentDate, setCurrentDate] = useState(new Date(2026, 0, 1)); // Jan 2026
   const [leaves, setLeaves] = useState([]);
+  const [configuredHolidayTypes, setConfiguredHolidayTypes] = useState([]);
   const { realTimeData } = useRealTime();
 
   const fetchEvents = async () => {
@@ -14,8 +15,54 @@ const Calendar = () => {
     const startDate = new Date(currentDate.getFullYear(), currentDate.getMonth(), 1).toISOString().split('T')[0];
     const endDate = new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0).toISOString().split('T')[0];
 
-    const res = await calendarAPI.getEvents(startDate, endDate);
+    const [res, settingsRes] = await Promise.all([
+      calendarAPI.getEvents(startDate, endDate),
+      api.get('/settings/').catch(() => ({ data: null }))
+    ]);
     console.log("Calendar API response:", res);
+
+    const parseJsonLike = (value) => {
+      if (value == null) return null;
+      if (typeof value === 'object') return value;
+      if (typeof value === 'string') {
+        try {
+          return JSON.parse(value);
+        } catch {
+          try {
+            const normalized = value
+              .replace(/\bNone\b/g, 'null')
+              .replace(/\bTrue\b/g, 'true')
+              .replace(/\bFalse\b/g, 'false')
+              .replace(/'/g, '"');
+            return JSON.parse(normalized);
+          } catch {
+            return null;
+          }
+        }
+      }
+      return null;
+    };
+
+    const normalizeHolidayTypes = (types) => {
+      const list = Array.isArray(types) ? types : [];
+      const map = new Map();
+      list.forEach((item) => {
+        if (typeof item === 'string') {
+          const name = item.trim();
+          if (!name) return;
+          map.set(name.toLowerCase(), { name, color: '#3B82F6' });
+          return;
+        }
+        const name = String(item?.name || item?.label || item?.type || '').trim();
+        if (!name) return;
+        const color = String(item?.color || item?.colour || '#3B82F6').trim() || '#3B82F6';
+        map.set(name.toLowerCase(), { name, color });
+      });
+      return Array.from(map.values());
+    };
+
+    const parsedOtherSettings = parseJsonLike(settingsRes?.data?.other_settings) || {};
+    setConfiguredHolidayTypes(normalizeHolidayTypes(parsedOtherSettings?.holiday_types));
 
     // Normalize leaves: backend may return leaves in `leaves` array
     // or as `events` where event_type === 'leave'. Also handle raw array responses.
@@ -40,10 +87,16 @@ const Calendar = () => {
     const mapped = normalized.map(r => {
       const start = r.start_date || r.start || r.date || r.startDate || null;
       const end = r.end_date || r.end || r.endDate || null;
+      const status = String(r.status || '').toLowerCase();
+      // Business rule: approved employee leaves should be shown in gray.
+      const color = status === 'approved'
+        ? '#9CA3AF'
+        : (r.color || r.colour || r.backgroundColor || null);
       return {
         ...r,
         _start: start,
         _end: end,
+        color,
       };
     });
 
@@ -59,6 +112,16 @@ const Calendar = () => {
     const edits = getClientEdits();
 
     const filtered = (mapped || []).filter(ev => {
+      const sourceType = String(ev?.source_type || ev?.source || '').toLowerCase();
+      const status = String(ev?.status || ev?.leave_status || '').toLowerCase();
+      const isConfiguredCalendarLeave = sourceType === 'leave_configuration';
+
+      // Show admin-configured calendar leaves always, but for employee-applied leaves
+      // only include approved ones.
+      if (!isConfiguredCalendarLeave && status && status !== 'approved') {
+        return false;
+      }
+
       const id = ev.event_id || ev.id || ev.eventId || ev._id;
       if (!id) return true;
       return !deleted.has(String(id));
@@ -83,10 +146,22 @@ const Calendar = () => {
 
   useEffect(() => {
   console.log("Real-time update:", realTimeData);
-  if (realTimeData?.type === "calendar_update") {
+    if (realTimeData?.type === "calendar_update" || realTimeData?.type === "settings_update") {
     fetchEvents();
   }
 }, [realTimeData]);
+
+  useEffect(() => {
+    const handleSettingsEvent = (event) => {
+      const eventType = event?.detail?.type;
+      if (eventType === 'calendar_update' || eventType === 'settings_update') {
+        fetchEvents();
+      }
+    };
+
+    window.addEventListener('settings-update', handleSettingsEvent);
+    return () => window.removeEventListener('settings-update', handleSettingsEvent);
+  }, []);
  
 
 
@@ -159,6 +234,36 @@ const Calendar = () => {
 const leaveDateSet = new Set(monthLeaves.map(l => formatDate(l.parsedDate)));
 // map date -> leave entry (first one for that date)
 const leaveMap = new Map(monthLeaves.map(l => [formatDate(l.parsedDate), l]));
+
+const holidayLegendItems = useMemo(() => {
+  const map = new Map();
+  (configuredHolidayTypes || []).forEach((item) => {
+    const label = String(item?.name || '').trim();
+    if (!label) return;
+    map.set(label.toLowerCase(), {
+      label,
+      color: item?.color || '#d1d5db'
+    });
+  });
+
+  (leaves || []).forEach((entry) => {
+    const type = String(
+      entry?.holiday_type ||
+      entry?.holidayType ||
+      entry?.recurring_pattern?.holiday_type ||
+      ''
+    ).trim();
+    if (!type) return;
+    const key = type.toLowerCase();
+    if (!map.has(key)) {
+      map.set(key, {
+        label: type,
+        color: entry?.color || entry?.colour || entry?.backgroundColor || '#d1d5db'
+      });
+    }
+  });
+  return Array.from(map.values());
+}, [leaves, configuredHolidayTypes]);
 
 // choose readable text color for a background hex (simple luminance)
 const getTextColorForBg = (hex) => {
@@ -313,34 +418,52 @@ const getTextColorForBg = (hex) => {
     Leave Days - {currentDate.toLocaleString('default', { month: 'long' })}
   </h2>
 
-      {monthLeaves.length === 0 ? (
-    <p className="text-gray-500 text-sm">No leaves this month</p>
-  ) : (
-    <ul className="space-y-3">
-      {monthLeaves.map((leave, idx) => (
-        <li
-          key={idx}
-          className="p-3 bg-white rounded shadow-sm border flex items-center justify-between"
-        >
-          <div>
-            <div className="text-xs text-gray-500">
-              {leave.parsedDate.toLocaleDateString("en-GB")}
-            </div>
-            <div className="font-semibold">
-              {leave.leave_type || leave.type || leave.title || "Leave"}
-            </div>
-            <div className="text-xl text-gray-500">
-              {leave.reason || leave.description || ""}
-            </div>
-          </div>
-
-          <div className="ml-3 flex items-center gap-2">
-            <span className="w-6 h-6 rounded-sm border" style={{ backgroundColor: leave.color || leave.colour || '#eee' }} />
-          </div>
-        </li>
+  <div className="mb-4 p-3 bg-white rounded border">
+    <h3 className="text-sm font-semibold text-gray-700 mb-2">Legends</h3>
+    <div className="space-y-2 text-xs">
+      {holidayLegendItems.map((item) => (
+        <div key={item.label} className="flex items-center gap-2">
+          <span className="w-4 h-4 rounded-sm border" style={{ backgroundColor: item.color }} />
+          <span>{item.label}</span>
+        </div>
       ))}
-    </ul>
-  )}
+      <div className="flex items-center gap-2">
+        <span className="w-4 h-4 rounded-sm border" style={{ backgroundColor: '#9CA3AF' }} />
+        <span>On Leave</span>
+      </div>
+    </div>
+  </div>
+
+      <div className="max-h-[50vh] overflow-y-auto pr-1">
+        {monthLeaves.length === 0 ? (
+          <p className="text-gray-500 text-sm">No leaves this month</p>
+        ) : (
+          <ul className="space-y-3">
+            {monthLeaves.map((leave, idx) => (
+              <li
+                key={idx}
+                className="p-3 bg-white rounded shadow-sm border flex items-center justify-between"
+              >
+                <div>
+                  <div className="text-xs text-gray-500">
+                    {leave.parsedDate.toLocaleDateString("en-GB")}
+                  </div>
+                  <div className="font-semibold">
+                    {leave.leave_type || leave.type || leave.title || "Leave"}
+                  </div>
+                  <div className="text-xl text-gray-500">
+                    {leave.reason || leave.description || ""}
+                  </div>
+                </div>
+
+                <div className="ml-3 flex items-center gap-2">
+                  <span className="w-6 h-6 rounded-sm border" style={{ backgroundColor: leave.color || leave.colour || '#eee' }} />
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
 </div>
 
   </div>

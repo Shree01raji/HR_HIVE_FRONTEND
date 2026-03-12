@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { leaveAPI, leavePolicyAPI, workflowAPI } from '../../services/api';
+import { leaveAPI, leavePolicyAPI, workflowAPI, leaveTypesAPI, calendarAPI } from '../../services/api';
 import api from '../../services/api';
 import { WorkflowStatusCard, WorkflowDiagram, WorkflowTimeline } from '../../components/workflow';
 import { FiInfo, FiCheckCircle, FiXCircle, FiClock, FiCalendar, FiX } from 'react-icons/fi';
@@ -19,6 +19,12 @@ export default function LeaveManagement() {
   const [loadingWorkflows, setLoadingWorkflows] = useState({});
   const [expandedWorkflow, setExpandedWorkflow] = useState(null);
   const [activeTab, setActiveTab] = useState('leave');
+  const [showLeaveModal, setShowLeaveModal] = useState(false);
+  const [leaveModalMode, setLeaveModalMode] = useState('view');
+  const [selectedLeave, setSelectedLeave] = useState(null);
+  const [editForm, setEditForm] = useState({ start_date: '', end_date: '', notes: '', permission_hours: '' });
+  const [leaveActionLoading, setLeaveActionLoading] = useState(false);
+  const [configuredHolidayDates, setConfiguredHolidayDates] = useState([]);
 
   const normalizeLeaveType = (value) => String(value || '').trim().toLowerCase();
   const normalizeStatus = (value) => String(value || '').trim().toUpperCase();
@@ -33,9 +39,58 @@ export default function LeaveManagement() {
     const normalized = normalizeLeaveType(value);
     return normalized.includes('pl or earned leave') || normalized.includes('earned leave');
   };
-  const isPermissionType = (value) => normalizeLeaveType(value).includes('permission');
+  const isPermissionType = (value) => {
+    const normalized = String(value || '').toLowerCase().replace(/[_\-]+/g, ' ').trim();
+    return normalized.includes('permission');
+  };
+
+  const getLeaveDurationType = (leave) => {
+    const notes = String(leave?.notes || '');
+    const durationMatch = notes.match(/\[LEAVE_DURATION:\s*([A-Z_]+)\]/i);
+    const rawDuration = String(durationMatch?.[1] || '').toUpperCase();
+
+    if (rawDuration === 'FIRST_HALF') return 'first_half';
+    if (rawDuration === 'SECOND_HALF') return 'second_half';
+    return 'full_day';
+  };
+
+  const getLeaveDurationLabel = (leave) => {
+    const durationType = getLeaveDurationType(leave);
+    if (durationType === 'first_half') return 'First Half';
+    if (durationType === 'second_half') return 'Second Half';
+    return 'Full Day';
+  };
+
+  const isHalfDayLeave = (leave) => ['first_half', 'second_half'].includes(getLeaveDurationType(leave));
+
+  const formatLeaveValue = (value) => {
+    if (!Number.isFinite(Number(value))) return value;
+    const numericValue = Number(value);
+    return Number.isInteger(numericValue) ? String(numericValue) : numericValue.toFixed(1);
+  };
+
+  const getDisplayReason = (leave) => {
+    const notes = String(leave?.notes || '').trim();
+    if (!notes) return 'No reason provided';
+
+    const lines = notes
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .filter((line) => !/^\[LEAVE_DURATION:/i.test(line))
+      .filter((line) => !/^Permission Hours:/i.test(line))
+      .filter((line) => !/^Auto-approved:/i.test(line))
+      .filter((line) => !/^Pending HR approval:/i.test(line));
+
+    const cleaned = lines.join(' ').trim();
+    return cleaned || 'No reason provided';
+  };
 
   const getLeaveDurationDays = (leave) => {
+    if (isHalfDayLeave(leave) && !isPermissionType(leave?.leave_type)) {
+      return 0.5;
+    }
+
     const start = new Date(leave?.start_date);
     const end = new Date(leave?.end_date || leave?.start_date);
     if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
@@ -90,6 +145,85 @@ export default function LeaveManagement() {
     }, {});
   };
 
+  const parseJsonLike = (value) => {
+    if (value == null) return null;
+    if (typeof value === 'object') return value;
+    if (typeof value === 'string') {
+      try {
+        return JSON.parse(value);
+      } catch {
+        try {
+          const normalized = value
+            .replace(/\bNone\b/g, 'null')
+            .replace(/\bTrue\b/g, 'true')
+            .replace(/\bFalse\b/g, 'false')
+            .replace(/'/g, '"');
+          return JSON.parse(normalized);
+        } catch {
+          return null;
+        }
+      }
+    }
+    return null;
+  };
+
+  const extractLeaveTypeRows = (payload) => {
+    if (Array.isArray(payload)) return payload;
+    if (!payload || typeof payload !== 'object') return [];
+    if (Array.isArray(payload.data)) return payload.data;
+    if (Array.isArray(payload.items)) return payload.items;
+    if (Array.isArray(payload.results)) return payload.results;
+    const firstArray = Object.values(payload).find((value) => Array.isArray(value));
+    return Array.isArray(firstArray) ? firstArray : [];
+  };
+
+  const normalizeLeaveConfigFromTypeRows = (rows) => {
+    const config = {};
+    rows.forEach((row) => {
+      const leaveType = String(row?.leave_type || row?.name || row?.type_name || row?.title || row?.label || '').trim();
+      if (!leaveType) return;
+      const rawDays = row?.default_days_per_year ?? row?.days_per_year ?? row?.days ?? row?.allowed_days ?? 0;
+      const parsed = Number(rawDays);
+      config[leaveType] = Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+    });
+    return config;
+  };
+
+  const extractHolidayTypeNames = (types) => {
+    const list = Array.isArray(types) ? types : [];
+    const names = new Set();
+
+    list.forEach((item) => {
+      if (typeof item === 'string') {
+        const parsedItem = parseJsonLike(item);
+        if (parsedItem && typeof parsedItem === 'object') {
+          const parsedName = String(parsedItem?.name || parsedItem?.label || parsedItem?.type || '').trim();
+          if (parsedName) names.add(parsedName);
+          return;
+        }
+
+        const directName = item.trim();
+        if (directName) names.add(directName);
+        return;
+      }
+
+      const name = String(item?.name || item?.label || item?.type || '').trim();
+      if (name) names.add(name);
+    });
+
+    return Array.from(names);
+  };
+
+  const mergeLeaveConfigWithHolidayTypes = (baseConfig, holidayTypeNames = []) => {
+    const merged = normalizeLeaveConfig(baseConfig);
+    holidayTypeNames.forEach((typeName) => {
+      if (!Object.prototype.hasOwnProperty.call(merged, typeName)) {
+        merged[typeName] = 0;
+      }
+    });
+    return merged;
+  };
+
   const getLeaveConfigCacheKey = () => {
     const org = localStorage.getItem('selectedOrganization') || 'default';
     return `leave_config_cache:${org}`;
@@ -112,18 +246,79 @@ export default function LeaveManagement() {
     }
   };
 
+  const toDateOnly = (value) => {
+    if (!value) return '';
+    const raw = String(value);
+    return raw.includes('T') ? raw.split('T')[0] : raw;
+  };
+
+  const extractCalendarEvents = (payload) => {
+    if (Array.isArray(payload)) return payload;
+    if (!payload || typeof payload !== 'object') return [];
+    if (Array.isArray(payload.events)) return payload.events;
+    if (Array.isArray(payload.data)) return payload.data;
+    if (Array.isArray(payload.items)) return payload.items;
+    const firstArray = Object.values(payload).find((value) => Array.isArray(value));
+    return Array.isArray(firstArray) ? firstArray : [];
+  };
+
+  const fetchConfiguredHolidayDates = useCallback(async () => {
+    try {
+      const start = new Date();
+      start.setFullYear(start.getFullYear() - 1);
+      const end = new Date();
+      end.setFullYear(end.getFullYear() + 1);
+
+      const response = await calendarAPI.getEvents(toDateOnly(start.toISOString()), toDateOnly(end.toISOString()));
+      const events = extractCalendarEvents(response);
+      const seen = new Set();
+
+      const mapped = events
+        .filter((entry) => {
+          const sourceType = String(entry?.source_type || entry?.source || '').toLowerCase();
+          const eventType = String(entry?.event_type || entry?.type || '').toLowerCase();
+          const hasHolidayType = Boolean(entry?.holiday_type || entry?.leave_type || entry?.title);
+          return sourceType === 'leave_configuration' || eventType === 'holiday' || (eventType === 'leave' && hasHolidayType);
+        })
+        .map((entry) => {
+          const leaveType = String(
+            entry?.holiday_type ||
+            entry?.leave_type ||
+            entry?.recurring_pattern?.holiday_type ||
+            entry?.title ||
+            'Holiday'
+          ).trim();
+          const startDate = toDateOnly(entry?.start_date || entry?.start || entry?.date);
+          const endDate = toDateOnly(entry?.end_date || entry?.end || entry?.start_date || entry?.start || entry?.date);
+          return { leaveType, startDate, endDate };
+        })
+        .filter((entry) => entry.startDate && entry.leaveType)
+        .filter((entry) => {
+          const key = `${entry.leaveType.toLowerCase()}|${entry.startDate}|${entry.endDate}`;
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        })
+        .sort((a, b) => String(a.startDate).localeCompare(String(b.startDate)));
+
+      setConfiguredHolidayDates(mapped);
+    } catch (err) {
+      console.warn('Failed to fetch configured holiday dates:', err);
+      setConfiguredHolidayDates([]);
+    }
+  }, []);
+
   useEffect(() => {
     fetchLeaveConfig();
+    fetchConfiguredHolidayDates();
   }, []);
 
   const fetchLeaveConfig = useCallback(async () => {
     try {
-      console.log('Fetching leave configuration from settings...');
-      // Use the employee-accessible endpoint
-      // Protect against a hung request by racing the API call with a timeout fallback
+      console.log('Fetching leave configuration from leave-types DB...');
       const timeoutMs = 8000; // 8s
       const timeoutPromise = new Promise((resolve) => setTimeout(() => resolve({ __timedout: true }), timeoutMs));
-      const response = await Promise.race([api.get('/settings/leave-config'), timeoutPromise]);
+      const response = await Promise.race([leaveTypesAPI.list(), timeoutPromise]);
       if (response && response.__timedout) {
         console.warn('Leave config request timed out');
         const cached = readCachedLeaveConfig();
@@ -137,11 +332,27 @@ export default function LeaveManagement() {
         setLoading(false);
         return;
       }
-      const data = response.data;
-      console.log('Leave config response:', data);
-      console.log('leave_config:', data?.leave_config);
 
-      const normalizedConfig = normalizeLeaveConfig(data?.leave_config);
+      const rows = extractLeaveTypeRows(response);
+      let normalizedConfig = normalizeLeaveConfigFromTypeRows(rows);
+
+      let holidayTypeNames = [];
+      try {
+        const settingsResponse = await api.get('/settings/');
+        const parsedOtherSettings = parseJsonLike(settingsResponse?.data?.other_settings) || {};
+        holidayTypeNames = extractHolidayTypeNames(parsedOtherSettings?.holiday_types);
+      } catch (settingsErr) {
+        console.warn('Failed to fetch holiday types from settings:', settingsErr);
+      }
+
+      if (Object.keys(normalizedConfig).length === 0) {
+        // Fallback for environments still using settings-based leave config.
+        const settingsResponse = await api.get('/settings/leave-config');
+        normalizedConfig = normalizeLeaveConfig(settingsResponse?.data?.leave_config);
+      }
+
+      normalizedConfig = mergeLeaveConfigWithHolidayTypes(normalizedConfig, holidayTypeNames);
+
       if (Object.keys(normalizedConfig).length > 0) {
         console.log('Leave config found:', normalizedConfig);
         setLeaveConfig(normalizedConfig);
@@ -374,11 +585,13 @@ export default function LeaveManagement() {
     // Poll every 30s to pick up admin-side leave configuration changes.
     const interval = setInterval(() => {
       if (!loading) fetchLeaveConfig();
+      if (!loading) fetchConfiguredHolidayDates();
     }, 30000);
 
     const handleVisibility = () => {
       if (document.visibilityState === 'visible') {
         fetchLeaveConfig();
+        fetchConfiguredHolidayDates();
       }
     };
 
@@ -388,12 +601,13 @@ export default function LeaveManagement() {
       clearInterval(interval);
       document.removeEventListener('visibilitychange', handleVisibility);
     };
-  }, [fetchLeaveConfig, loading]);
+  }, [fetchLeaveConfig, fetchConfiguredHolidayDates, loading]);
 
   useEffect(() => {
     const handleSettingsUpdate = (event) => {
       if (event?.detail?.type === 'settings_update') {
         fetchLeaveConfig();
+        fetchConfiguredHolidayDates();
       }
     };
 
@@ -402,7 +616,7 @@ export default function LeaveManagement() {
     return () => {
       window.removeEventListener('settings-update', handleSettingsUpdate);
     };
-  }, [fetchLeaveConfig]);
+  }, [fetchLeaveConfig, fetchConfiguredHolidayDates]);
 
   const handleViewPolicy = async (leaveType) => {
     try {
@@ -460,6 +674,152 @@ export default function LeaveManagement() {
       return date.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
     } catch {
       return dateString;
+    }
+  };
+
+  const openLeaveModal = (leave, mode = 'view') => {
+    setSelectedLeave(leave);
+    setLeaveModalMode(mode);
+    setEditForm({
+      start_date: leave?.start_date || '',
+      end_date: leave?.end_date || '',
+      notes: getDisplayReason(leave),
+      permission_hours: leave?.permission_hours ?? extractPermissionHours(leave) ?? '',
+      leave_duration: getLeaveDurationType(leave)
+    });
+    setShowLeaveModal(true);
+  };
+
+  const closeLeaveModal = () => {
+    setShowLeaveModal(false);
+    setSelectedLeave(null);
+    setLeaveModalMode('view');
+    setEditForm({ start_date: '', end_date: '', notes: '', permission_hours: '' });
+  };
+
+  const handleEditPendingLeave = async () => {
+    if (!selectedLeave?.leave_id) return;
+    try {
+      setLeaveActionLoading(true);
+      setPolicyMessage(null);
+
+      const isPermission = isPermissionType(selectedLeave.leave_type);
+      const normalizeDateInput = (value) => {
+        if(!value) return '';
+        const raw = String (value).trim();
+        if (!raw) return '';
+        return raw.includes('T') ? raw.split('T')[0] : raw; // Extract date part if datetime is provided
+      };
+      // Validate permission leaves on client to avoid backend 400 errors
+      if (isPermission) {
+        const hours = Number(editForm.permission_hours);
+        if (!Number.isFinite(hours) || hours <= 0) {
+          setPolicyMessage('Please enter valid permission hours before updating.');
+          setLeaveActionLoading(false);
+          return;
+        }
+        if (String(editForm.leave_duration || '').toLowerCase() === 'full_day') {
+          setPolicyMessage('Permission leave cannot be a full day. Select a session (first/second half).');
+          setLeaveActionLoading(false);
+          return;
+        }
+      }
+
+      // Validate WFH rules: must apply at least 3 days in advance and max 2 days per month
+      const MIN_ADVANCE_DAYS = 3;
+      const MAX_WFH_PER_MONTH = 2;
+      const normalizedType = normalizeLeaveType(selectedLeave.leave_type || editForm.leave_type);
+      const isWFH = normalizedType.includes('work from home') || normalizedType.includes('wfh');
+      if (isWFH) {
+        // Check minimum advance days (allow backfill within 3 days)
+        const today = new Date();
+        today.setHours(0,0,0,0);
+        const startDate = new Date(editForm.start_date);
+        startDate.setHours(0,0,0,0);
+        const daysDiff = Math.ceil((startDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+        if (daysDiff > 0 && daysDiff < MIN_ADVANCE_DAYS) {
+          setPolicyMessage(`Work From Home must be applied at least ${MIN_ADVANCE_DAYS} days in advance.`);
+          setLeaveActionLoading(false);
+          return;
+        }
+
+        // Check monthly cap (exclude current leave from count)
+        try {
+          const myLeaves = await leaveAPI.getMyLeaves();
+          const now = new Date();
+          const currentYear = now.getFullYear();
+          const currentMonth = now.getMonth();
+
+          const usedWFHDaysThisMonth = (myLeaves || []).reduce((sum, r) => {
+            try {
+              if (!r || r.leave_id === selectedLeave.leave_id) return sum; // exclude the leave being edited
+              const lt = String(r.leave_type || '').toLowerCase();
+              if (!lt.includes('work from home') && !lt.includes('wfh')) return sum;
+              const status = (r.status || '').toString().toLowerCase();
+              if (!['pending', 'approved'].includes(status)) return sum;
+              const s = new Date(r.start_date);
+              const eDate = new Date(r.end_date || r.start_date);
+              if (s.getFullYear() !== currentYear || s.getMonth() !== currentMonth) return sum;
+              const days = Math.max(0, Math.round((eDate - s) / (1000 * 60 * 60 * 24)) + 1);
+              return sum + days;
+            } catch (err) {
+              return sum;
+            }
+          }, 0);
+
+          const sReq = new Date(editForm.start_date);
+          const eReq = new Date(isPermission ? editForm.start_date : editForm.end_date || editForm.start_date);
+          const requestedDays = Math.max(1, Math.round((eReq - sReq) / (1000 * 60 * 60 * 24)) + 1);
+
+          if (usedWFHDaysThisMonth + requestedDays > MAX_WFH_PER_MONTH) {
+            setPolicyMessage(`Work From Home can be applied for up to ${MAX_WFH_PER_MONTH} day(s) per month. You have already used ${usedWFHDaysThisMonth} day(s) this month.`);
+            setLeaveActionLoading(false);
+            return;
+          }
+        } catch (err) {
+          console.warn('Failed to validate WFH monthly cap; proceeding and letting server enforce if needed', err);
+        }
+      }
+
+      // Build payload; include permission_hours only for permission leaves
+      const payload = {
+        start_date: editForm.start_date,
+        end_date: isPermission ? editForm.start_date : editForm.end_date,
+        notes: editForm.notes,
+        leave_duration: editForm.leave_duration,
+        ...(isPermission ? { permission_hours: Number(editForm.permission_hours) } : {}),
+      };
+
+      console.log('[LeaveManagement] Updating leave payload:', payload);
+      await leaveAPI.update(selectedLeave.leave_id, payload);
+      await fetchLeaveData();
+      closeLeaveModal();
+      setPolicyMessage('Pending leave request updated successfully.');
+    } catch (err) {
+      console.error('Failed to update pending leave:', err);
+      setPolicyMessage(err?.response?.data?.detail || 'Failed to update pending leave request.');
+    } finally {
+      setLeaveActionLoading(false);
+    }
+  };
+
+  const handleCancelPendingLeave = async (leave) => {
+    if (!leave?.leave_id) return;
+    const confirmed = window.confirm('Cancel this pending leave request?');
+    if (!confirmed) return;
+
+    try {
+      setLeaveActionLoading(true);
+      setPolicyMessage(null);
+      console.log('[LeaveManagement] Cancelling leave id:', leave.leave_id);
+      await leaveAPI.cancel(leave.leave_id);
+      await fetchLeaveData();
+      setPolicyMessage('Pending leave request cancelled successfully.');
+    } catch (err) {
+      console.error('Failed to cancel pending leave:', err);
+      setPolicyMessage(err?.response?.data?.detail || 'Failed to cancel pending leave request.');
+    } finally {
+      setLeaveActionLoading(false);
     }
   };
 
@@ -522,7 +882,9 @@ export default function LeaveManagement() {
               <span>Reload Config</span>
             </button>
             <button
-              onClick={fetchLeaveData}
+              onClick={async () => {
+                await Promise.all([fetchLeaveData(), fetchConfiguredHolidayDates()]);
+              }}
               disabled={loading}
               className="flex items-center space-x-2 px-4 py-2 bg-[#181c52] text-white rounded-lg hover:bg-[#2c2f70] transition-colors disabled:opacity-50"
             >
@@ -660,12 +1022,12 @@ export default function LeaveManagement() {
                 <div className="grid grid-cols-2 gap-4">
                   <div>
                     <p className="text-xs text-gray-600 dark:text-gray-400 uppercase">Taken</p>
-                    <div className="text-2xl font-bold text-red-600 dark:text-red-400">{taken}</div>
+                    <div className="text-2xl font-bold text-red-600 dark:text-red-400">{formatLeaveValue(taken)}</div>
                   </div>
                   {!isAsRequired && (
                     <div>
                       <p className="text-xs text-gray-600 dark:text-gray-400 uppercase">Remaining</p>
-                      <div className="text-2xl font-bold text-blue-600 dark:text-blue-400">{remaining}</div>
+                      <div className="text-2xl font-bold text-blue-600 dark:text-blue-400">{formatLeaveValue(remaining)}</div>
                     </div>
                   )}
                 </div>
@@ -683,6 +1045,43 @@ export default function LeaveManagement() {
               </div>
             )})}
           </div>
+
+          {/* <div className="bg-white dark:bg-gray-800 shadow rounded-lg p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold text-gray-900 dark:text-white">Configured Holiday Dates</h3>
+              <span className="text-xs text-gray-500 dark:text-gray-400">Dates from admin leave configuration</span>
+            </div>
+
+            {configuredHolidayDates.length === 0 ? (
+              <p className="text-sm text-gray-500 dark:text-gray-400">
+                No configured holiday dates found yet.
+              </p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
+                  <thead className="bg-gray-50 dark:bg-gray-700">
+                    <tr>
+                      <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Holiday Type</th>
+                      <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Start Date</th>
+                      <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">End Date</th>
+                    </tr>
+                  </thead>
+                  <tbody className="bg-white dark:bg-gray-800 divide-y divide-gray-200 dark:divide-gray-700">
+                    {configuredHolidayDates.map((entry, index) => (
+                      <tr key={`${entry.leaveType}-${entry.startDate}-${index}`}>
+                        <td className="px-4 py-2 text-sm text-gray-900 dark:text-white">{entry.leaveType}</td>
+                        <td className="px-4 py-2 text-sm text-gray-700 dark:text-gray-300">{formatDate(entry.startDate)}</td>
+                        <td className="px-4 py-2 text-sm text-gray-700 dark:text-gray-300">{formatDate(entry.endDate)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            <p className="mt-3 text-xs text-gray-500 dark:text-gray-400">
+              Use these dates when applying leave through the HR Assistant chat.
+            </p>
+          </div> */}
 
           {/* Leave History */}
           {/* <div className="bg-white dark:bg-gray-800 shadow rounded-lg p-6">
@@ -768,9 +1167,36 @@ export default function LeaveManagement() {
                     </div>
                     <p className="text-sm text-gray-600 dark:text-gray-300">From: {new Date(leave.start_date).toLocaleDateString()}</p>
                     <p className="text-sm text-gray-600 dark:text-gray-300">To: {new Date(leave.end_date).toLocaleDateString()}</p>
-                    <p className="text-sm text-gray-700 dark:text-gray-200 mt-2">{leave.notes || 'No reason provided'}</p>
+                    <p className="text-sm text-gray-600 dark:text-gray-300">
+                      Duration: {formatLeaveValue(getLeaveDurationDays(leave))} day(s) ({getLeaveDurationLabel(leave)})
+                    </p>
+                    <p className="text-sm text-gray-700 dark:text-gray-200 mt-2">{getDisplayReason(leave)}</p>
 
-                    {showWorkflowAction && (
+                    {activeTab === 'requested' && (
+                      <div className="mt-3 flex items-center gap-2">
+                        <button
+                          onClick={() => openLeaveModal(leave, 'view')}
+                          className="px-3 py-1 rounded bg-blue-100 text-blue-700 hover:bg-blue-200 text-xs"
+                        >
+                          View
+                        </button>
+                        <button
+                          onClick={() => openLeaveModal(leave, 'edit')}
+                          className="px-3 py-1 rounded bg-amber-100 text-amber-700 hover:bg-amber-200 text-xs"
+                        >
+                          Edit
+                        </button>
+                        <button
+                          onClick={() => handleCancelPendingLeave(leave)}
+                          disabled={leaveActionLoading}
+                          className="px-3 py-1 rounded bg-red-100 text-red-700 hover:bg-red-200 text-xs disabled:opacity-50"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    )}
+
+                    {/* {showWorkflowAction && (
                       <div className="mt-3">
                         {resourceId ? (
                           <button
@@ -799,7 +1225,7 @@ export default function LeaveManagement() {
                           <span className="text-xs text-gray-400">No workflow</span>
                         )}
                       </div>
-                    )}
+                    )} */}
 
                     {showWorkflowAction && expandedWorkflow === (resourceId || leave.leave_id) && workflow && (
                       <div className="mt-4 space-y-3 border-t border-gray-200 dark:border-gray-600 pt-3">
@@ -819,6 +1245,124 @@ export default function LeaveManagement() {
               </div>
             );
           })()}
+        </div>
+      )}
+
+      {/* Policy Details Modal */}
+      {showLeaveModal && selectedLeave && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white dark:bg-gray-800 rounded-lg shadow-xl max-w-xl w-full">
+            <div className="px-6 py-4 border-b border-gray-200 dark:border-gray-700 flex justify-between items-center">
+              <h3 className="text-lg font-semibold text-gray-900 dark:text-white">
+                {leaveModalMode === 'edit' ? 'Edit Pending Leave' : 'Leave Request Details'}
+              </h3>
+              <button onClick={closeLeaveModal} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300">
+                <FiX className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-4">
+              <div>
+                <p className="text-xs text-gray-500">Leave Type</p>
+                <p className="text-sm font-medium text-gray-900 dark:text-white">{selectedLeave.leave_type}</p>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">Start Date</label>
+                  {leaveModalMode === 'edit' ? (
+                    <input
+                      type="date"
+                      value={editForm.start_date}
+                      onChange={(e) => setEditForm((prev) => ({ ...prev, start_date: e.target.value }))}
+                      className="w-full border border-gray-300 dark:border-gray-600 rounded px-3 py-2 text-sm bg-white dark:bg-gray-900"
+                    />
+                  ) : (
+                    <p className="text-sm text-gray-900 dark:text-white">{formatDate(selectedLeave.start_date)}</p>
+                  )}
+                </div>
+
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">End Date</label>
+                  {leaveModalMode === 'edit' ? (
+                    <input
+                      type="date"
+                      value={isPermissionType(selectedLeave.leave_type) ? editForm.start_date : editForm.end_date}
+                      onChange={(e) => setEditForm((prev) => ({ ...prev, end_date: e.target.value }))}
+                      disabled={isPermissionType(selectedLeave.leave_type)}
+                      className="w-full border border-gray-300 dark:border-gray-600 rounded px-3 py-2 text-sm bg-white dark:bg-gray-900 disabled:opacity-60"
+                    />
+                  ) : (
+                    <p className="text-sm text-gray-900 dark:text-white">{formatDate(selectedLeave.end_date)}</p>
+                  )}
+                </div>
+              </div>
+
+              {isPermissionType(selectedLeave.leave_type) && (
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">Permission Hours</label>
+                  {leaveModalMode === 'edit' ? (
+                    <input
+                      type="number"
+                      min="0.5"
+                      max="2"
+                      step="0.5"
+                      value={editForm.permission_hours}
+                      onChange={(e) => setEditForm((prev) => ({ ...prev, permission_hours: e.target.value }))}
+                      className="w-full border border-gray-300 dark:border-gray-600 rounded px-3 py-2 text-sm bg-white dark:bg-gray-900"
+                    />
+                  ) : (
+                    <p className="text-sm text-gray-900 dark:text-white">{extractPermissionHours(selectedLeave)} hour(s)</p>
+                  )}
+                </div>
+              )}
+              {isPermissionType(selectedLeave.leave_type) && leaveModalMode === 'edit' && (
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">Session</label>
+                  <select
+                    value={editForm.leave_duration}
+                    onChange={(e) => setEditForm((prev) => ({ ...prev, leave_duration: e.target.value }))}
+                    className="w-full border border-gray-300 dark:border-gray-600 rounded px-3 py-2 text-sm bg-white dark:bg-gray-900"
+                  >
+                    <option value="first_half">First Half</option>
+                    <option value="second_half">Second Half</option>
+                  </select>
+                </div>
+              )}
+
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">Reason</label>
+                {leaveModalMode === 'edit' ? (
+                  <textarea
+                    rows={3}
+                    value={editForm.notes}
+                    onChange={(e) => setEditForm((prev) => ({ ...prev, notes: e.target.value }))}
+                    className="w-full border border-gray-300 dark:border-gray-600 rounded px-3 py-2 text-sm bg-white dark:bg-gray-900"
+                  />
+                ) : (
+                  <p className="text-sm text-gray-900 dark:text-white">{getDisplayReason(selectedLeave)}</p>
+                )}
+              </div>
+            </div>
+
+            <div className="px-6 py-4 border-t border-gray-200 dark:border-gray-700 flex justify-end gap-2">
+              <button
+                onClick={closeLeaveModal}
+                className="px-4 py-2 rounded border border-gray-300 dark:border-gray-600 text-sm"
+              >
+                Close
+              </button>
+              {leaveModalMode === 'edit' && (
+                <button
+                  onClick={handleEditPendingLeave}
+                  disabled={leaveActionLoading}
+                  className="px-4 py-2 rounded bg-[#181c52] text-white text-sm disabled:opacity-50"
+                >
+                  {leaveActionLoading ? 'Saving...' : 'Save Changes'}
+                </button>
+              )}
+            </div>
+          </div>
         </div>
       )}
 

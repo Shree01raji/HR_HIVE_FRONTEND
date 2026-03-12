@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { FiSettings, FiPlus, FiEdit, FiTrash2, FiUsers, FiEye, FiX } from 'react-icons/fi';
-import api, { leavePolicyAPI, employeeAPI } from '../../services/api';
+import api, { leavePolicyAPI, employeeAPI, leaveTypesAPI } from '../../services/api';
 
 const FALLBACK_LEAVE_TYPES = ['Paid Leave', 'Sick Leave', 'Maternity', 'Unpaid Leave'];
 
@@ -38,15 +38,30 @@ export default function LeavePolicies() {
   const fetchData = async () => {
     try {
       setLoading(true);
-      const [policiesData, employeesData, leaveConfigResponse] = await Promise.all([
-        leavePolicyAPI.getPolicies(),
+      const [policiesData, employeesData, leaveTypesResponse, leaveConfigResponse] = await Promise.all([
+        leavePolicyAPI.getPolicies(true),
         employeeAPI.getAll(),
+        leaveTypesAPI.list().catch(() => null),
         api.get('/settings/leave-config').catch(() => ({ data: { leave_config: {} } }))
       ]);
 
+      const leaveTypeRows = Array.isArray(leaveTypesResponse)
+        ? leaveTypesResponse
+        : Array.isArray(leaveTypesResponse?.data)
+          ? leaveTypesResponse.data
+          : Array.isArray(leaveTypesResponse?.items)
+            ? leaveTypesResponse.items
+            : [];
+
+      const leaveTypesFromDb = leaveTypeRows
+        .map((row) => String(row?.leave_type || row?.name || row?.type_name || '').trim())
+        .filter(Boolean);
+
       const leaveConfig = leaveConfigResponse?.data?.leave_config || {};
       const leaveTypesFromConfig = Object.keys(leaveConfig);
-      const availableLeaveTypes = leaveTypesFromConfig.length > 0 ? leaveTypesFromConfig : FALLBACK_LEAVE_TYPES;
+      const availableLeaveTypes = leaveTypesFromDb.length > 0
+        ? leaveTypesFromDb
+        : (leaveTypesFromConfig.length > 0 ? leaveTypesFromConfig : FALLBACK_LEAVE_TYPES);
 
       const safePolicies = Array.isArray(policiesData) ? policiesData : [];
       const filteredPolicies = safePolicies.filter((policy) => availableLeaveTypes.includes(policy?.leave_type));
@@ -266,7 +281,10 @@ export default function LeavePolicies() {
     
     try {
       setError(null);
-      await leavePolicyAPI.deletePolicy(selectedPolicy.policy_id);
+      const deletedPolicyId = selectedPolicy.policy_id;
+      await leavePolicyAPI.deletePolicy(deletedPolicyId);
+      // Backend deactivates policy, so remove it from active list immediately.
+      setPolicies((prev) => prev.filter((policy) => policy.policy_id !== deletedPolicyId));
       await fetchData();
       setShowDeleteConfirm(false);
       setSelectedPolicy(null);

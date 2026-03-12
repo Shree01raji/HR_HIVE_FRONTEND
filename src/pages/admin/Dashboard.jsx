@@ -719,7 +719,7 @@ const handleSendBirthdayWish = async (employee) => {
                 isDepartmentHR={isDepartmentHR}
             />
             <QuickActionCard
-              title="Approve Leaves"
+              title="View Leaves"
               // description="Review requests"
               icon={<FiCheckSquare className="w-5 h-5" />}
               link="/admin/leaves"

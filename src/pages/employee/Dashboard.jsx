@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { leaveAPI, onboardingAPI, chatAPI, employeeAPI } from '../../services/api';
+import { leaveAPI, onboardingAPI, chatAPI, employeeAPI, leaveTypesAPI, timesheetAPI } from '../../services/api';
 import { useAuth } from '../../contexts/AuthContext';
 import { Link, useNavigate } from 'react-router-dom';
 import { 
@@ -12,12 +12,31 @@ import {
   FiCheckCircle,
   FiEdit3,
   FiChevronDown,
-  FiMoreVertical
+  FiMoreVertical,
+  FiPlay,
+  FiPause
 } from 'react-icons/fi';
 import CalendarWidget from '../../components/employee/CalendarWidget';
 import ConnectionStatus from '../../components/ConnectionStatus';
 
 export default function EmployeeDashboard() {
+  const BREAK_LIMIT_SECONDS = 60 * 60;
+  const getTodayKey = () => {
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const day = String(now.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  };
+
+  const formatDuration = (totalSeconds) => {
+    const safeSeconds = Math.max(0, Number(totalSeconds) || 0);
+    const hours = String(Math.floor(safeSeconds / 3600)).padStart(2, '0');
+    const minutes = String(Math.floor((safeSeconds % 3600) / 60)).padStart(2, '0');
+    const seconds = String(safeSeconds % 60).padStart(2, '0');
+    return `${hours}:${minutes}:${seconds}`;
+  };
+
   const { user, updateProfile, refreshUser } = useAuth();
   const navigate = useNavigate();
   const [stats, setStats] = useState({
@@ -28,11 +47,7 @@ export default function EmployeeDashboard() {
   });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [leaveBalance, setLeaveBalance] = useState({
-    annual: { used: 10, total: 60 },
-    sick: { used: 0, total: 10 },
-    compassionate: { used: 8, total: 15 }
-  });
+  const [leaveBalance, setLeaveBalance] = useState({});
   const [todos, setTodos] = useState([]);
   const [managerName, setManagerName] = useState('');
   const [employeeData, setEmployeeData] = useState(null);
@@ -41,11 +56,111 @@ export default function EmployeeDashboard() {
   const [sendingWishes, setSendingWishes] = useState({});
   const [wishedEmployees, setWishedEmployees] = useState({});
   const [wishesHiddenAfterThankYou, setWishesHiddenAfterThankYou] = useState(false);
+  const [isLeaveBalanceExpanded, setIsLeaveBalanceExpanded] = useState(true);
+  const [currentTimeMs, setCurrentTimeMs] = useState(Date.now());
+  const [timeTracking, setTimeTracking] = useState({
+    dateKey: '',
+    workAccumulatedSeconds: 0,
+    workStartMs: null,
+    breakAccumulatedSeconds: 0,
+    breakStartMs: null
+  });
+  const [timerActionLoading, setTimerActionLoading] = useState(false);
 
   const getSafeDate = (value) => {
     if (!value) return null;
     const parsed = new Date(value);
     return Number.isNaN(parsed.getTime()) ? null : parsed;
+  };
+
+  const toTimestampMs = (value) => {
+    if (!value) return null;
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? null : parsed.getTime();
+  };
+
+  const normalizeSessionToTracking = (sessionPayload) => {
+    if (!sessionPayload || typeof sessionPayload !== 'object') return null;
+
+    const payload = sessionPayload?.data && typeof sessionPayload.data === 'object'
+      ? sessionPayload.data
+      : sessionPayload;
+    const session = payload?.session && typeof payload.session === 'object' ? payload.session : {};
+    const active = Boolean(
+      payload?.active ??
+      payload?.is_active ??
+      payload?.clocked_in ??
+      payload?.is_clocked_in ??
+      session?.active ??
+      session?.is_active
+    );
+
+    const workSecondsRaw =
+      payload?.work_seconds ??
+      payload?.total_work_seconds ??
+      payload?.today_work_seconds ??
+      payload?.current_duration_seconds ??
+      session?.work_seconds ??
+      session?.total_work_seconds;
+
+    const breakSecondsRaw =
+      payload?.break_seconds ??
+      payload?.total_break_seconds ??
+      payload?.today_break_seconds ??
+      session?.break_seconds ??
+      session?.total_break_seconds;
+
+    const hasDurationHours = Number.isFinite(Number(payload?.current_duration_hours));
+    const inferredWorkSeconds = hasDurationHours
+      ? Math.max(0, Math.round(Number(payload.current_duration_hours) * 3600))
+      : 0;
+
+    const workAccumulatedSeconds = Math.max(
+      0,
+      Number.isFinite(Number(workSecondsRaw)) ? Number(workSecondsRaw) : inferredWorkSeconds
+    );
+    const breakAccumulatedSeconds = Math.max(0, Number(breakSecondsRaw) || 0);
+
+    const workStartMs =
+      toTimestampMs(payload?.clock_in_at) ||
+      toTimestampMs(payload?.clock_in_time) ||
+      toTimestampMs(payload?.start_time) ||
+      toTimestampMs(payload?.login_time) ||
+      toTimestampMs(session?.clock_in_at) ||
+      toTimestampMs(session?.clock_in_time) ||
+      toTimestampMs(session?.start_time) ||
+      toTimestampMs(session?.login_time);
+
+    const breakStartMs =
+      toTimestampMs(payload?.break_started_at) ||
+      toTimestampMs(payload?.break_start_time) ||
+      toTimestampMs(session?.break_started_at) ||
+      toTimestampMs(session?.break_start_time);
+
+    return {
+      dateKey: getTodayKey(),
+      workAccumulatedSeconds,
+      // When explicit totals are returned, resume from now to avoid double-counting from historic timestamps.
+      workStartMs: active && !breakStartMs ? (workAccumulatedSeconds > 0 ? Date.now() : (workStartMs || Date.now())) : null,
+      breakAccumulatedSeconds,
+      breakStartMs: breakStartMs ? Date.now() : null
+    };
+  };
+
+  const syncTimerFromServer = async () => {
+    try {
+      const sessionData = await timesheetAPI.getTodaySession();
+      const normalized = normalizeSessionToTracking(sessionData);
+      if (normalized) {
+        setTimeTracking((prev) => ({
+          ...prev,
+          ...normalized
+        }));
+      }
+    } catch (err) {
+      // Keep local timer running if API is unavailable; do not block dashboard.
+      console.warn('Failed to sync timer from server:', err);
+    }
   };
 
   const normalizeBirthdayEmployees = (birthdays) => {
@@ -72,12 +187,104 @@ export default function EmployeeDashboard() {
       }));
   };
 
+  const extractLeaveTypeRows = (payload) => {
+    if (Array.isArray(payload)) return payload;
+    if (!payload || typeof payload !== 'object') return [];
+    if (Array.isArray(payload.data)) return payload.data;
+    if (Array.isArray(payload.items)) return payload.items;
+    if (Array.isArray(payload.results)) return payload.results;
+    const firstArray = Object.values(payload).find((value) => Array.isArray(value));
+    return Array.isArray(firstArray) ? firstArray : [];
+  };
+
+  const normalizeLeaveTypeName = (value) => String(value || '').trim().toLowerCase();
+
+  const getLeaveDurationDays = (leave) => {
+    const notes = String(leave?.notes || '');
+    const durationMatch = notes.match(/\[LEAVE_DURATION:\s*([A-Z_]+)\]/i);
+    const rawDuration = String(durationMatch?.[1] || '').toUpperCase();
+    const isHalfDay = rawDuration === 'FIRST_HALF' || rawDuration === 'SECOND_HALF';
+
+    if (isHalfDay) return 0.5;
+
+    const start = new Date(leave?.start_date);
+    const end = new Date(leave?.end_date || leave?.start_date);
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return 0;
+    return Math.max(0, Math.ceil((end - start) / (1000 * 60 * 60 * 24)) + 1);
+  };
+
   useEffect(() => {
     if (user?.employee_id) {
       fetchEmployeeData();
       fetchDashboardData();
     }
   }, [user?.employee_id]); // Only re-fetch when employee_id changes
+
+  useEffect(() => {
+    if (!user?.employee_id) return;
+
+    const storageKey = `employee-dashboard-timers-${user.employee_id}`;
+    const todayKey = getTodayKey();
+    const nowMs = Date.now();
+    const defaultTracking = {
+      dateKey: todayKey,
+      workAccumulatedSeconds: 0,
+      workStartMs: nowMs,
+      breakAccumulatedSeconds: 0,
+      breakStartMs: null
+    };
+
+    try {
+      const raw = localStorage.getItem(storageKey);
+      const parsed = raw ? JSON.parse(raw) : null;
+      const shouldReuse = parsed && parsed.dateKey === todayKey;
+      const legacyLoginStartMs = Number(parsed?.loginStartMs) || null;
+      const safeTracking = shouldReuse
+        ? {
+            dateKey: parsed.dateKey,
+        workAccumulatedSeconds: Math.max(0, Number(parsed.workAccumulatedSeconds) || 0),
+        workStartMs: parsed.workStartMs ? Number(parsed.workStartMs) : (legacyLoginStartMs || nowMs),
+            breakAccumulatedSeconds: Math.max(0, Number(parsed.breakAccumulatedSeconds) || 0),
+            breakStartMs: parsed.breakStartMs ? Number(parsed.breakStartMs) : null
+          }
+        : defaultTracking;
+
+      setTimeTracking(safeTracking);
+      localStorage.setItem(storageKey, JSON.stringify(safeTracking));
+      syncTimerFromServer();
+    } catch (err) {
+      console.error('Failed to read employee timer state:', err);
+      setTimeTracking(defaultTracking);
+      localStorage.setItem(storageKey, JSON.stringify(defaultTracking));
+      syncTimerFromServer();
+    }
+  }, [user?.employee_id]);
+
+  useEffect(() => {
+    if (!user?.employee_id || !timeTracking.dateKey) return;
+    const storageKey = `employee-dashboard-timers-${user.employee_id}`;
+    localStorage.setItem(storageKey, JSON.stringify(timeTracking));
+  }, [timeTracking, user?.employee_id]);
+
+  useEffect(() => {
+    const timerId = setInterval(() => setCurrentTimeMs(Date.now()), 1000);
+    return () => clearInterval(timerId);
+  }, []);
+
+  useEffect(() => {
+    if (!user?.employee_id || !timeTracking.dateKey) return;
+    const todayKey = getTodayKey();
+    if (todayKey === timeTracking.dateKey) return;
+
+    const nowMs = Date.now();
+    setTimeTracking({
+      dateKey: todayKey,
+      workAccumulatedSeconds: 0,
+      workStartMs: nowMs,
+      breakAccumulatedSeconds: 0,
+      breakStartMs: null
+    });
+  }, [currentTimeMs, timeTracking.dateKey, user?.employee_id]);
 
   const fetchEmployeeData = async () => {
     try {
@@ -122,7 +329,7 @@ export default function EmployeeDashboard() {
       
       console.log('Fetching dashboard data...');
       
-      const [leaves, chats, tasks, birthdays, notifications] = await Promise.all([
+      const [leaves, chats, tasks, birthdays, notifications, leaveTypesPayload] = await Promise.all([
         leaveAPI.getMyLeaves().catch((err) => {
           console.error('Error fetching leaves:', err);
           return [];
@@ -142,6 +349,10 @@ export default function EmployeeDashboard() {
         onboardingAPI.getNotifications().catch((err) => {
           console.error('Error fetching notifications:', err);
           return [];
+        }),
+        leaveTypesAPI.list().catch((err) => {
+          console.error('Error fetching leave types:', err);
+          return [];
         })
       ]);
 
@@ -153,21 +364,63 @@ export default function EmployeeDashboard() {
       const safeTasks = Array.isArray(tasks) ? tasks : [];
       const safeBirthdays = normalizeBirthdayEmployees(birthdays);
 
+      const leaveTypeRows = extractLeaveTypeRows(leaveTypesPayload);
+      const currentYear = new Date().getFullYear();
+
+      const approvedLeaves = safeLeaves.filter((leave) => {
+        const status = String(leave?.status || '').toUpperCase();
+        const start = new Date(leave?.start_date || leave?.created_at || Date.now());
+        return status === 'APPROVED' && start.getFullYear() === currentYear;
+      });
+
+      const usedByType = approvedLeaves.reduce((acc, leave) => {
+        const key = normalizeLeaveTypeName(leave?.leave_type);
+        if (!key) return acc;
+        acc[key] = (acc[key] || 0) + getLeaveDurationDays(leave);
+        return acc;
+      }, {});
+
+      const computedLeaveBalance = {};
+      leaveTypeRows.forEach((row) => {
+        const rawName = row?.leave_type || row?.name || row?.type_name || row?.title || row?.label;
+        const leaveTypeName = String(rawName || '').trim();
+        if (!leaveTypeName) return;
+
+        const totalRaw = row?.default_days_per_year ?? row?.days_per_year ?? row?.days ?? row?.allowed_days ?? 0;
+        const total = Number.isFinite(Number(totalRaw)) ? Number(totalRaw) : 0;
+        const used = Number((usedByType[normalizeLeaveTypeName(leaveTypeName)] || 0).toFixed(1));
+
+        computedLeaveBalance[leaveTypeName] = { used, total };
+      });
+
+      const fallbackUsedByType = safeLeaves.reduce((acc, leave) => {
+        const key = String(leave?.leave_type || '').trim();
+        if (!key) return acc;
+        acc[key] = (acc[key] || 0) + getLeaveDurationDays(leave);
+        return acc;
+      }, {});
+
+      if (Object.keys(computedLeaveBalance).length === 0) {
+        Object.entries(fallbackUsedByType).forEach(([type, used]) => {
+          computedLeaveBalance[type] = { used: Number(used.toFixed(1)), total: Number(used.toFixed(1)) };
+        });
+      }
+
+      const totalRemaining = Object.values(computedLeaveBalance).reduce((sum, item) => {
+        const total = Number(item?.total || 0);
+        const used = Number(item?.used || 0);
+        return sum + Math.max(0, total - used);
+      }, 0);
+
       setStats({
-        leaveBalance: 20, // Mock data - you can get this from API
+        leaveBalance: totalRemaining,
         pendingLeaves: safeLeaves.filter(l => l?.status === 'PENDING').length,
         activeChats: safeChats.length,
         completedTasks: safeTasks.filter(t => t?.status === 'COMPLETED').length
       });
 
-      // Update leave balance from actual data
-      const annualUsed = safeLeaves.filter(l => l?.leave_type === 'Annual' || l?.leave_type === 'ANNUAL').length;
-      const sickUsed = safeLeaves.filter(l => l?.leave_type === 'Sick' || l?.leave_type === 'SICK').length;
-      setLeaveBalance({
-        annual: { used: annualUsed || 10, total: 60 },
-        sick: { used: sickUsed || 0, total: 10 },
-        compassionate: { used: 8, total: 15 }
-      });
+      // Update leave balance from real leave types + leave history
+      setLeaveBalance(computedLeaveBalance);
       
       // Fetch todos
       setTodos(safeTasks.slice(0, 5).map(task => ({
@@ -226,6 +479,76 @@ export default function EmployeeDashboard() {
     setWishesHiddenAfterThankYou(true);
   };
 
+  const handleToggleBreak = async () => {
+    if (timerActionLoading) return;
+
+    const isOnBreak = Boolean(timeTracking.breakStartMs);
+    setTimerActionLoading(true);
+
+    try {
+      if (isOnBreak) {
+        const response = await timesheetAPI.endBreak();
+        const normalized = normalizeSessionToTracking(response);
+        if (normalized) {
+          setTimeTracking((prev) => ({ ...prev, ...normalized }));
+        } else {
+          await syncTimerFromServer();
+        }
+      } else {
+        const response = await timesheetAPI.startBreak();
+        const normalized = normalizeSessionToTracking(response);
+        if (normalized) {
+          setTimeTracking((prev) => ({ ...prev, ...normalized }));
+        } else {
+          await syncTimerFromServer();
+        }
+      }
+    } catch (err) {
+      console.warn('Failed to update break status via API, applying local fallback:', err);
+
+      // Non-blocking fallback keeps timer usable if API call fails.
+      setTimeTracking((prev) => {
+        if (!prev.dateKey) return prev;
+        const nowMs = Date.now();
+
+        if (!prev.breakStartMs) {
+          const activeWorkSeconds = prev.workStartMs
+            ? Math.max(0, Math.floor((nowMs - prev.workStartMs) / 1000))
+            : 0;
+
+          return {
+            ...prev,
+            workAccumulatedSeconds: prev.workAccumulatedSeconds + activeWorkSeconds,
+            workStartMs: null,
+            breakStartMs: nowMs
+          };
+        }
+
+        const elapsedSeconds = Math.max(0, Math.floor((nowMs - prev.breakStartMs) / 1000));
+        return {
+          ...prev,
+          breakStartMs: null,
+          breakAccumulatedSeconds: prev.breakAccumulatedSeconds + elapsedSeconds,
+          workStartMs: nowMs
+        };
+      });
+    } finally {
+      setTimerActionLoading(false);
+    }
+  };
+
+  const workSeconds = timeTracking.workAccumulatedSeconds + (
+    timeTracking.workStartMs
+      ? Math.max(0, Math.floor((currentTimeMs - timeTracking.workStartMs) / 1000))
+      : 0
+  );
+  const breakSeconds = timeTracking.breakAccumulatedSeconds + (
+    timeTracking.breakStartMs
+      ? Math.max(0, Math.floor((currentTimeMs - timeTracking.breakStartMs) / 1000))
+      : 0
+  );
+  const isBreakLimitExceeded = breakSeconds > BREAK_LIMIT_SECONDS;
+
   const userBirthday = getSafeDate(employeeData?.date_of_birth || user?.date_of_birth);
   const today = new Date();
   const isUsersBirthdayToday = Boolean(
@@ -283,34 +606,44 @@ export default function EmployeeDashboard() {
       <div className="flex-1 px-6 pb-6 grid grid-cols-1 lg:grid-cols-3 gap-6 overflow-y-auto">
         {/* Left Column - Available Leave Days */}
         <div className="lg:col-span-2 space-y-6">
-          {/* Quick Actions Section */}
-          <div>
-        <h2 className="text-lg font-semibold text-gray-800 mb-3">Quick Actions</h2>
-            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-          <button
-            onClick={() => navigate('/employee/leaves')}
-            className="bg-gray-100 hover:bg-gray-200 text-gray-800 px-4 py-3 rounded-lg font-medium transition-colors text-sm"
-          >
-            Apply for Leave
-          </button>
-          <button
-            onClick={() => navigate('/employee/payroll')}
-            className="bg-gray-100 hover:bg-gray-200 text-gray-800 px-4 py-3 rounded-lg font-medium transition-colors text-sm"
-          >
-            View Payslip
-          </button>
-          <button
-            onClick={() => navigate('/employee/profile')}
-            className="bg-gray-100 hover:bg-gray-200 text-gray-800 px-4 py-3 rounded-lg font-medium transition-colors text-sm"
-          >
-            Update Profile
-          </button>
-          <button
-            onClick={() => navigate('/employee/expenses')}
-            className="bg-gray-100 hover:bg-gray-200 text-gray-800 px-4 py-3 rounded-lg font-medium transition-colors text-sm"
-          >
-            Expenses
-          </button>
+          {/* Daily Time Tracking */}
+          <div className="bg-white rounded-lg shadow-sm p-6">
+            <h2 className="text-lg font-semibold text-gray-800 mb-4">Today's Timers</h2>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="bg-slate-50 border border-slate-200 rounded-lg p-4">
+                <p className="text-xs uppercase tracking-wide text-slate-500 font-semibold mb-2">Work Timer</p>
+                <div className="flex items-center justify-between">
+                  <span className="text-2xl font-bold text-slate-900">{formatDuration(workSeconds)}</span>
+                  <span className={`text-xs font-medium px-2 py-1 rounded-full ${timeTracking.workStartMs ? 'text-green-600 bg-green-100' : 'text-slate-600 bg-slate-200'}`}>
+                    {timeTracking.workStartMs ? 'Running' : 'Paused'}
+                  </span>
+                </div>
+                <p className="text-xs text-slate-500 mt-2">Starts at login, pauses during break, and resets daily.</p>
+              </div>
+
+              <div className={`border rounded-lg p-4 ${isBreakLimitExceeded ? 'bg-red-50 border-red-300' : 'bg-amber-50 border-amber-200'}`}>
+                <p className="text-xs uppercase tracking-wide font-semibold mb-2 text-amber-700">Break Timer (Daily 1h Limit)</p>
+                <div className="flex items-center justify-between">
+                  <span className={`text-2xl font-bold ${isBreakLimitExceeded ? 'text-red-600' : 'text-amber-900'}`}>
+                    {formatDuration(breakSeconds)}
+                  </span>
+                  <button
+                    onClick={handleToggleBreak}
+                    disabled={timerActionLoading}
+                    className={`inline-flex items-center gap-1 px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
+                      timeTracking.breakStartMs
+                        ? 'bg-red-600 hover:bg-red-700 text-white'
+                        : 'bg-amber-600 hover:bg-amber-700 text-white'
+                    } ${timerActionLoading ? 'opacity-60 cursor-not-allowed' : ''}`}
+                  >
+                    {timeTracking.breakStartMs ? <FiPause className="w-4 h-4" /> : <FiPlay className="w-4 h-4" />}
+                    {timeTracking.breakStartMs ? 'Stop Break' : 'Start Break'}
+                  </button>
+                </div>
+                <p className={`text-xs mt-2 ${isBreakLimitExceeded ? 'text-red-600' : 'text-amber-700'}`}>
+                  {isBreakLimitExceeded ? 'Break limit exceeded. Please resume work.' : 'Timer turns red if total break exceeds 1 hour.'}
+                </p>
+              </div>
         </div>
       </div>
 
@@ -318,53 +651,43 @@ export default function EmployeeDashboard() {
           <div className="bg-white rounded-lg shadow-sm p-6">
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-lg font-semibold text-gray-800">Available Leave Days</h3>
-              <button className="text-gray-400 hover:text-gray-600">
-                <FiMoreVertical className="w-5 h-5" />
+              <button 
+                onClick={() => setIsLeaveBalanceExpanded(!isLeaveBalanceExpanded)}
+                className="text-gray-600 hover:text-gray-900 transition-transform duration-300"
+                style={{ transform: isLeaveBalanceExpanded ? 'rotate(0deg)' : 'rotate(-90deg)' }}
+              >
+                <FiChevronDown className="w-5 h-5" />
               </button>
             </div>
+            {isLeaveBalanceExpanded && (
             <div className="space-y-4">
-              {/* Annual Leave */}
-              <div>
-                <div className="flex justify-between text-sm mb-2">
-                  <span className="text-gray-700">Annual Leave</span>
-                  <span className="text-gray-600">{leaveBalance.annual.used} of {leaveBalance.annual.total} day(s)</span>
-                </div>
-                <div className="w-full bg-gray-200 rounded-full h-2.5">
-                  <div 
-                    className="bg-[#1e3a5f] h-2.5 rounded-full" 
-                    style={{ width: `${(leaveBalance.annual.used / leaveBalance.annual.total) * 100}%` }}
-                  ></div>
-                </div>
-              </div>
-              
-              {/* Sick Leave */}
-              <div>
-                <div className="flex justify-between text-sm mb-2">
-                  <span className="text-gray-700">Sick Leave</span>
-                  <span className="text-gray-600">{leaveBalance.sick.used} of {leaveBalance.sick.total} day(s)</span>
-                </div>
-                <div className="w-full bg-gray-200 rounded-full h-2.5">
-                  <div 
-                    className="bg-gray-300 h-2.5 rounded-full" 
-                    style={{ width: `${(leaveBalance.sick.used / leaveBalance.sick.total) * 100}%` }}
-                  ></div>
-                </div>
-              </div>
-              
-              {/* Compassionate Leave */}
-              <div>
-                <div className="flex justify-between text-sm mb-2">
-                  <span className="text-gray-700">Compassionate Leave</span>
-                  <span className="text-gray-600">{leaveBalance.compassionate.used} of {leaveBalance.compassionate.total} day(s)</span>
-                </div>
-                <div className="w-full bg-gray-200 rounded-full h-2.5">
-                  <div 
-                    className="bg-[#1e3a5f] h-2.5 rounded-full" 
-                    style={{ width: `${(leaveBalance.compassionate.used / leaveBalance.compassionate.total) * 100}%` }}
-                  ></div>
-                </div>
-              </div>
+              {Object.keys(leaveBalance).length === 0 ? (
+                <p className="text-sm text-gray-500">No leave balance data available.</p>
+              ) : (
+                Object.entries(leaveBalance).map(([leaveType, metrics]) => {
+                  const used = Number(metrics?.used || 0);
+                  const total = Number(metrics?.total || 0);
+                  const percent = total > 0 ? Math.min(100, (used / total) * 100) : 0;
+                  const isExhausted = total > 0 && used >= total;
+
+                  return (
+                    <div key={leaveType}>
+                      <div className="flex justify-between text-sm mb-2">
+                        <span className={isExhausted ? 'text-red-600 font-semibold' : 'text-gray-700'}>{leaveType}</span>
+                        <span className={isExhausted ? 'text-red-600 font-semibold' : 'text-gray-600'}>{used} of {total} day(s)</span>
+                      </div>
+                      <div className="w-full bg-gray-200 rounded-full h-2.5">
+                        <div
+                          className={`${isExhausted ? 'bg-red-500' : 'bg-[#1e3a5f]'} h-2.5 rounded-full`}
+                          style={{ width: `${percent}%` }}
+                        ></div>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
             </div>
+            )}
           </div>
         </div>
 

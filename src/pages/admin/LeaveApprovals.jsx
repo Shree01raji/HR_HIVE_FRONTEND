@@ -1,12 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import { FiCheck, FiX, FiClock, FiUser, FiCalendar, FiFileText, FiChevronLeft, FiChevronRight, FiEye } from 'react-icons/fi';
-import { leaveAPI } from '../../services/api';
+import { leaveAPI, calendarAPI } from '../../services/api';
 
 export default function LeaveApprovals() {
   const [leaves, setLeaves] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [filter, setFilter] = useState('all'); // all, pending, approved, rejected
+  const [filter, setFilter] = useState('manager_reviewed'); // manager_reviewed, approved, rejected
   const [currentCardIndex, setCurrentCardIndex] = useState(0);
   const [showDetailsPanel, setShowDetailsPanel] = useState(false);
   const [selectedLeave, setSelectedLeave] = useState(null);
@@ -78,7 +78,36 @@ export default function LeaveApprovals() {
       
       const response = await leaveAPI.approve(leaveId);
       console.log('Approval response:', response);
-      
+
+      // Find leave data locally to create a calendar event for the employee
+      const approvedLeave = leaves.find(l => String(l.leave_id || l.id) === String(leaveId));
+      const leaveData = approvedLeave || response || {};
+
+      try {
+        // Build calendar event payload
+        const isPermission = String(leaveData.leave_type || '').toLowerCase().includes('permission');
+        const duration = String(leaveData.leave_duration || '').toLowerCase();
+        const all_day = !(isPermission || ['first_half', 'second_half'].includes(duration));
+
+        const eventPayload = {
+          event_type: 'leave',
+          title: leaveData.leave_type || 'Leave',
+          leave_type: leaveData.leave_type || null,
+          start_date: leaveData.start_date,
+          end_date: leaveData.end_date || leaveData.start_date,
+          all_day: all_day,
+          description: leaveData.notes || null,
+          employee_id: leaveData.employee_id || leaveData.requested_by || null,
+          source_type: 'leave',
+          source_id: leaveData.leave_id || leaveData.id || null,
+        };
+
+        console.log('[LeaveApprovals] Creating calendar event for approved leave:', eventPayload);
+        await calendarAPI.createEvent(eventPayload);
+      } catch (err) {
+        console.warn('Failed to create calendar event for approved leave:', err);
+      }
+
       await fetchLeaves(); // Refresh the list
     } catch (err) {
       console.error('Failed to approve leave:', err);
@@ -136,9 +165,57 @@ export default function LeaveApprovals() {
     }
   };
 
+  const toLower = (value) => String(value || '').toLowerCase();
+
+  const isManagerReviewed = (leave) => {
+    const statusValue = toLower(leave?.status);
+    const isReviewedStatus = statusValue === 'approved' || statusValue === 'rejected';
+    if (!isReviewedStatus) return false;
+
+    const explicitManagerSignals = [
+      toLower(leave?.approved_by_role).includes('manager'),
+      toLower(leave?.approver_role).includes('manager'),
+      toLower(leave?.approval_role).includes('manager'),
+      leave?.manager_approved === true,
+      leave?.approved_by_manager === true,
+      toLower(leave?.manager_approval_status) === 'approved',
+      toLower(leave?.manager_status) === 'approved',
+      !!leave?.manager_approved_by,
+      !!leave?.manager_approved_by_id
+    ].some(Boolean);
+
+    return explicitManagerSignals;
+  };
+
+  const hasExplicitManagerSignalsInDataset = leaves.some((leave) => isManagerReviewed(leave));
+
+  const isManagerReviewedWithFallback = (leave) => {
+    if (isManagerReviewed(leave)) return true;
+    if (hasExplicitManagerSignalsInDataset) return false;
+    const statusValue = toLower(leave?.status);
+    return (statusValue === 'approved' || statusValue === 'rejected') && !!leave?.approved_by;
+  };
+
+  const getManagerApproverName = (leave) => {
+    return (
+      leave?.manager_name ||
+      leave?.approver_name ||
+      leave?.approved_by_name ||
+      leave?.manager_approved_by_name ||
+      leave?.approved_by_email ||
+      (leave?.approved_by ? `Manager #${leave.approved_by}` : 'Manager')
+    );
+  };
+
+  const formatDateSafe = (value) => {
+    if (!value) return 'N/A';
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? 'N/A' : date.toLocaleDateString();
+  };
+
   const filteredLeaves = leaves.filter(leave => {
-    if (filter === 'all') return true;
-    return leave.status.toLowerCase() === filter.toLowerCase();
+    if (filter === 'manager_reviewed') return isManagerReviewedWithFallback(leave);
+    return toLower(leave?.status) === filter;
   });
 
   const handleCardSwipe = (direction) => {
@@ -212,7 +289,7 @@ export default function LeaveApprovals() {
       <div className="flex justify-between items-center mb-4">
         <div>
           <h2 className="text-xl font-bold text-gray-900">Leave Approvals</h2>
-          <p className="text-sm text-gray-600">Review and manage employee leave applications</p>
+          <p className="text-sm text-gray-600">Manager-reviewed leaves (approved and rejected) with employee details</p>
         </div>
         <button
           onClick={fetchLeaves}
@@ -226,8 +303,7 @@ export default function LeaveApprovals() {
       <div className="mb-4">
         <div className="flex space-x-1 bg-gray-100 p-1 rounded-lg w-fit">
           {[
-            { key: 'all', label: 'All', count: leaves.length },
-            { key: 'pending', label: 'Pending', count: leaves.filter(l => l.status.toLowerCase() === 'pending').length },
+            { key: 'manager_reviewed', label: 'Manager Reviewed', count: leaves.filter(l => isManagerReviewedWithFallback(l)).length },
             { key: 'approved', label: 'Approved', count: leaves.filter(l => l.status.toLowerCase() === 'approved').length },
             { key: 'rejected', label: 'Rejected', count: leaves.filter(l => l.status.toLowerCase() === 'rejected').length }
           ].map(tab => (
@@ -259,10 +335,9 @@ export default function LeaveApprovals() {
                 <FiFileText className="mx-auto h-16 w-16 text-gray-400 mb-4" />
                 <h3 className="text-lg font-medium text-gray-900 mb-2">No leave applications</h3>
                 <p className="text-gray-500">
-                  {filter === 'all' 
-                    ? 'No leave applications have been submitted yet.'
-                    : `No ${filter} leave applications found.`
-                  }
+                  {filter === 'manager_reviewed'
+                    ? 'No manager-reviewed leave applications found.'
+                    : `No ${filter} leave applications found.`}
                 </p>
               </div>
             </div>
@@ -350,9 +425,17 @@ export default function LeaveApprovals() {
                               <div className="flex items-center space-x-2">
                                 <FiClock className="w-4 h-4 text-gray-400" />
                                 <div>
-                                  <p className="text-sm text-gray-600">Applied On</p>
+                                  <p className="text-sm text-gray-600">Manager</p>
+                                  <p className="font-medium text-gray-900">{getManagerApproverName(currentLeave)}</p>
+                                </div>
+                              </div>
+
+                              <div className="flex items-center space-x-2">
+                                <FiClock className="w-4 h-4 text-gray-400" />
+                                <div>
+                                  <p className="text-sm text-gray-600">Manager Decision On</p>
                                   <p className="font-medium text-gray-900">
-                                    {new Date(currentLeave.requested_at || currentLeave.created_at).toLocaleDateString()}
+                                    {formatDateSafe(currentLeave.approved_at || currentLeave.manager_approved_at)}
                                   </p>
                                 </div>
                               </div>
@@ -373,20 +456,20 @@ export default function LeaveApprovals() {
                           
                           {currentLeave.status.toLowerCase() === 'pending' && (
                             <div className="flex space-x-3">
-                              <button
+                              {/* <button
                                 onClick={() => handleApprove(currentLeave.leave_id || currentLeave.id)}
                                 className="flex-1 flex items-center justify-center space-x-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors"
                               >
                                 <FiCheck className="w-4 h-4" />
                                 <span>Approve</span>
-                              </button>
-                              <button
+                              </button> */}
+                              {/* <button
                                 onClick={() => handleReject(currentLeave.leave_id || currentLeave.id)}
                                 className="flex-1 flex items-center justify-center space-x-2 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors"
                               >
                                 <FiX className="w-4 h-4" />
                                 <span>Reject</span>
-                              </button>
+                              </button> */}
                             </div>
                           )}
                         </div>
@@ -490,14 +573,39 @@ export default function LeaveApprovals() {
                         <div>
                           <p className="text-sm text-gray-600">Applied On</p>
                           <p className="font-medium text-gray-900">
-                            {new Date(selectedLeave.requested_at || selectedLeave.created_at).toLocaleDateString()}
+                            {formatDateSafe(selectedLeave.requested_at || selectedLeave.created_at)}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="bg-white rounded-lg p-4 shadow-sm">
+                      <h4 className="text-md font-semibold text-gray-900 mb-3 flex items-center">
+                        <FiCheck className="w-5 h-5 mr-2" />
+                        Manager Decision Details
+                      </h4>
+                      <div className="grid grid-cols-1 gap-4">
+                        <div>
+                          <p className="text-sm text-gray-600">Reviewed By</p>
+                          <p className="font-medium text-gray-900">{getManagerApproverName(selectedLeave)}</p>
+                        </div>
+                        <div>
+                          <p className="text-sm text-gray-600">Decision Date</p>
+                          <p className="font-medium text-gray-900">
+                            {formatDateSafe(selectedLeave.approved_at || selectedLeave.manager_approved_at)}
+                          </p>
+                        </div>
+                        <div>
+                          <p className="text-sm text-gray-600">Approval Reference</p>
+                          <p className="font-medium text-gray-900">
+                            {selectedLeave.approved_by || selectedLeave.manager_approved_by_id || 'N/A'}
                           </p>
                         </div>
                       </div>
                     </div>
 
                     {/* Reason */}
-                    {selectedLeave.notes && (
+                    {/* {selectedLeave.notes && (
                       <div className="bg-white rounded-lg p-6 shadow-sm">
                         <h4 className="text-lg font-semibold text-gray-900 mb-4 flex items-center">
                           <FiFileText className="w-5 h-5 mr-2" />
@@ -505,10 +613,10 @@ export default function LeaveApprovals() {
                         </h4>
                         <p className="text-gray-700 leading-relaxed">{selectedLeave.notes}</p>
                       </div>
-                    )}
+                    )} */}
 
                     {/* Action Buttons - Compact */}
-                    {selectedLeave.status.toLowerCase() === 'pending' && (
+                    {/* {selectedLeave.status.toLowerCase() === 'pending' && (
                       <div className="bg-white rounded-lg p-4 shadow-sm">
                         <h4 className="text-md font-semibold text-gray-900 mb-3">Actions</h4>
                         <div className="flex space-x-4">
@@ -534,7 +642,7 @@ export default function LeaveApprovals() {
                           </button>
                         </div>
                       </div>
-                    )}
+                    )} */}
                   </>
                 )}
               </div>

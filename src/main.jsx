@@ -157,16 +157,19 @@ function RequireAuth({ children, allowedRoles = [] }) {
   }, [user, hasChecked, isChecking, refreshUser]);
 
   // Show loading state while checking auth
-  if (!user && (isChecking || (localStorage.getItem('token') && !hasChecked))) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto"></div>
-          <p className="mt-4 text-gray-600">Loading...</p>
-        </div>
+  const token = localStorage.getItem('token');
+
+// Wait if we still have a token but user is not loaded yet
+if (!user && token) {
+  return (
+    <div className="min-h-screen flex items-center justify-center">
+      <div className="text-center">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto"></div>
+        <p className="mt-4 text-gray-600">Loading...</p>
       </div>
-    );
-  }
+    </div>
+  );
+}
 
   if (!user) {
     return <Navigate to="/login" replace />;
@@ -190,9 +193,11 @@ function RequireAuth({ children, allowedRoles = [] }) {
   }
 
   // Check if organization is required for this route
-  const requiresOrganization = location.pathname.startsWith('/employee') || 
-                               location.pathname.startsWith('/candidate') ||
-                               location.pathname.includes('/onboarding');
+  const requiresOrganization =
+  location.pathname.startsWith('/employee') ||
+  location.pathname.startsWith('/candidate') ||
+  location.pathname.startsWith('/manager') ||
+  location.pathname.includes('/onboarding');
   
   // Check if user is organization admin (they don't need organization code)
   const isOrganizationAdmin = localStorage.getItem('isOrganizationAdmin') === 'true' ||
@@ -200,14 +205,39 @@ function RequireAuth({ children, allowedRoles = [] }) {
                                user.employee_id === 0 ||
                                (user.employee_id && user.department === null);
   
-  // For non-organization-admin users accessing routes that require organization, check if organization is selected
-  if (requiresOrganization && !isOrganizationAdmin && user.role !== 'ADMIN') {
-    const selectedOrganization = localStorage.getItem('selectedOrganization');
-    // Check if organization is missing or empty
+	// For non-organization-admin users accessing routes that require organization, check if organization is selected.
+	// Dual-role users should be allowed to switch portals without forced org-code relogin.
+	const roleUpper = user.role?.toUpperCase() || '';
+	const skipOrganizationPrompt = ['ADMIN', 'HR_MANAGER', 'MANAGER', 'SUPER_ADMIN'].includes(roleUpper);
+
+  if (requiresOrganization) {
+    // Always try to recover selectedOrganization so API calls include X-Organization-Slug.
+    // This matters for ADMIN/HR_MANAGER/MANAGER who skip the org-code prompt but still
+    // need the slug so the backend can route to the correct tenant database.
+    let selectedOrganization = localStorage.getItem('selectedOrganization');
     if (!selectedOrganization || selectedOrganization.trim() === '') {
-      // Redirect to login to show organization code screen
-      localStorage.setItem('tempUserData', JSON.stringify(user));
-      return <Navigate to="/login?showOrgCode=true" replace />;
+      try {
+        const organizationDataRaw = localStorage.getItem('organizationData');
+        if (organizationDataRaw) {
+          const organizationData = JSON.parse(organizationDataRaw);
+          const recoveredSlug = organizationData?.slug || organizationData?.organization_slug;
+          if (recoveredSlug && String(recoveredSlug).trim() !== '') {
+            selectedOrganization = String(recoveredSlug).trim();
+            localStorage.setItem('selectedOrganization', selectedOrganization);
+          }
+        }
+      } catch (error) {
+        console.warn('[RequireAuth] Failed to recover selectedOrganization from organizationData:', error);
+      }
+    }
+
+    // Only redirect to login for org-code if the user is NOT a dual-role user.
+    // ADMIN/HR_MANAGER/MANAGER/SUPER_ADMIN are already authenticated globally.
+    if (!isOrganizationAdmin && !skipOrganizationPrompt) {
+      if (!selectedOrganization || selectedOrganization.trim() === '') {
+        localStorage.setItem('tempUserData', JSON.stringify(user));
+        return <Navigate to="/login?showOrgCode=true" replace />;
+      }
     }
   }
 
@@ -247,7 +277,6 @@ function RequireOnboardingComplete({ children }) {
   (user?.role === 'EMPLOYEE' || user?.role === 'MANAGER') &&
   !!user?.employee_id &&
   (user?.is_onboarded === false || !user?.join_date);
-
 
   if (onboardingRequired) {
     return <Navigate to="/employee/onboarding" replace />;
@@ -351,7 +380,6 @@ function RequireAccountant({ children }) {
 // Route guard for employee portal - allows EMPLOYEE, ACCOUNTANT, and ADMIN/HR_MANAGER with employee_id
 function RequireEmployeeAccess({ children }) {
   const { user } = useAuth();
-  const location = useLocation();
 
   if (!user) {
     return <Navigate to="/login" replace />;
@@ -362,15 +390,15 @@ function RequireEmployeeAccess({ children }) {
   
   // Check if user is EMPLOYEE
   const isEmployee = user.role === 'EMPLOYEE';
+  const hasEmployeeId = Number(user?.employee_id) > 0;
   
-  // Check if user is ADMIN or HR_MANAGER with employee_id
+  // Check if user is ADMIN or HR_MANAGER
   const userRole = user.role?.toUpperCase() || '';
-  const isHRManager = userRole === 'HR_MANAGER' || userRole === 'ADMIN';
-  const hasEmployeeId = user?.employee_id && user.employee_id > 0;
-  const isHRWithEmployeeAccess = isHRManager && hasEmployeeId;
+  const isHRWithEmployeeAccess = (userRole === 'HR_MANAGER' || userRole === 'ADMIN') && hasEmployeeId;
+  const isManagerWithEmployeeAccess = userRole === 'MANAGER' && hasEmployeeId;
 
-  // Allow access if user is EMPLOYEE, ACCOUNTANT, or ADMIN/HR_MANAGER with employee_id
-  if (!isEmployee && !isAccountant && !isHRWithEmployeeAccess) {
+  // Allow access if user is EMPLOYEE, ACCOUNTANT, ADMIN/HR_MANAGER, or MANAGER with employee_id
+  if (!isEmployee && !isAccountant && !isHRWithEmployeeAccess && !isManagerWithEmployeeAccess) {
     // Redirect to appropriate dashboard based on role
     if (user.role === 'ADMIN' || user.role === 'SUPER_ADMIN') {
       const isOrganizationAdmin = localStorage.getItem('isOrganizationAdmin') === 'true' ||
@@ -395,21 +423,18 @@ function RequireEmployeeAccess({ children }) {
   return <RequireAuth>{children}</RequireAuth>;
 }
 
-
 function RequireManagerAccess({ children }) {
   const { user } = useAuth();
-
-  if (!user) {
-    return <Navigate to="/login" replace />;
-  }
 
   const roles = (user?.roles || [user?.role] || [])
     .map(r => r?.replace('ROLE_', '').toUpperCase());
 
-  if (!roles.includes('MANAGER')) {
+  // Only check role if user exists
+  if (user && !roles.includes('MANAGER')) {
     return <Navigate to="/employee" replace />;
   }
 
+  // Let RequireAuth handle login recovery
   return <RequireAuth>{children}</RequireAuth>;
 }
 
@@ -502,7 +527,6 @@ function Home() {
     return <Navigate to="/employee" replace />;
   }
 }
-
 
 function App() {
   return (
@@ -742,3 +766,4 @@ function App() {
 
 const root = createRoot(document.getElementById('root'));
 root.render(<App />);
+

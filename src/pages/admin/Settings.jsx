@@ -27,7 +27,7 @@ import {
 } from 'react-icons/fi';
 import api from '../../services/api';
 import Organizations from './Organizations';
-import { subscriptionAPI, organizationAPI ,calendarAPI} from '../../services/api';
+import { subscriptionAPI, organizationAPI ,calendarAPI, leaveTypesAPI } from '../../services/api';
 import NearLimitWarning from '../../components/admin/NearLimitWarning';
 import PlansModal from '../../components/admin/PlansModal';
 import ConnectionStatus from '../../components/ConnectionStatus';
@@ -127,10 +127,212 @@ const [showLeaveModal, setShowLeaveModal] = useState(false);
 const [leaveDate, setLeaveDate] = useState(new Date());
 const [leaveTitle, setLeaveTitle] = useState('');
 const [leaveColor, setLeaveColor] = useState('');
+const [leaveHolidayType, setLeaveHolidayType] = useState('');
+const [holidayTypes, setHolidayTypes] = useState([]);
+const [showHolidayTypeModal, setShowHolidayTypeModal] = useState(false);
+const [holidayTypeColorInput, setHolidayTypeColorInput] = useState('#3B82F6');
+const [newHolidayType, setNewHolidayType] = useState('');
 const COLOR_MATRIX = useMemo(() => generateColorMatrix(), []);
+const holidayTypeNames = useMemo(() => {
+  return (holidayTypes || []).map((item) => String(item?.name || '').trim()).filter(Boolean);
+}, [holidayTypes]);
 
 // UI: control showing the configured leaves list
 const [showConfiguredList, setShowConfiguredList] = useState(true);
+const [leaveTypeRows, setLeaveTypeRows] = useState([]);
+
+const normalizeHolidayTypes = (types) => {
+  const list = Array.isArray(types) ? types : [];
+  const map = new Map();
+
+  const getExistingColor = (name) => {
+    const normalizedName = String(name || '').trim().toLowerCase();
+    if (!normalizedName) return null;
+    const existing = (holidayTypes || []).find(
+      (item) => String(item?.name || '').trim().toLowerCase() === normalizedName
+    );
+    return existing?.color || null;
+  };
+
+  list.forEach((item) => {
+    if (typeof item === 'string') {
+      const parsedItem = parseJsonLike(item);
+      if (parsedItem && typeof parsedItem === 'object') {
+        const parsedName = String(parsedItem?.name || parsedItem?.label || parsedItem?.type || '').trim();
+        if (!parsedName) return;
+        const parsedColor =
+          String(parsedItem?.color || parsedItem?.colour || getExistingColor(parsedName) || '#3B82F6').trim() || '#3B82F6';
+        map.set(parsedName.toLowerCase(), { name: parsedName, color: parsedColor });
+        return;
+      }
+
+      const name = item.trim();
+      if (!name) return;
+      const color = getExistingColor(name) || '#3B82F6';
+      map.set(name.toLowerCase(), { name, color });
+      return;
+    }
+
+    const name = String(item?.name || item?.label || item?.type || '').trim();
+    if (!name) return;
+    const color = String(item?.color || item?.colour || getExistingColor(name) || '#3B82F6').trim() || '#3B82F6';
+    map.set(name.toLowerCase(), { name, color });
+  });
+
+  return Array.from(map.values());
+};
+
+const normalizeHexColor = (value, fallback = '#3B82F6') => {
+  const raw = String(value || '').trim();
+  const shortHexMatch = raw.match(/^#([0-9a-fA-F]{3})$/);
+  if (shortHexMatch) {
+    const expanded = shortHexMatch[1]
+      .split('')
+      .map((char) => `${char}${char}`)
+      .join('')
+      .toUpperCase();
+    return `#${expanded}`;
+  }
+
+  const fullHexMatch = raw.match(/^#([0-9a-fA-F]{6})$/);
+  if (fullHexMatch) {
+    return `#${fullHexMatch[1].toUpperCase()}`;
+  }
+
+  return fallback;
+};
+
+const getHolidayTypeColor = (typeName) => {
+  const normalized = String(typeName || '').trim().toLowerCase();
+  const match = (holidayTypes || []).find((item) => String(item?.name || '').trim().toLowerCase() === normalized);
+  return match?.color || '#3B82F6';
+};
+
+  const getLeaveTypeLabelFromRow = (row) =>
+    String(row?.leave_type || row?.name || row?.type_name || row?.title || row?.label || '').trim();
+
+  const getLeaveTypeIdFromRow = (row) => row?.type_id ?? row?.leave_type_id ?? row?.id ?? null;
+
+  const extractLeaveTypeRows = (payload) => {
+    if (Array.isArray(payload)) return payload;
+    if (!payload || typeof payload !== 'object') return [];
+    if (Array.isArray(payload.data)) return payload.data;
+    if (Array.isArray(payload.items)) return payload.items;
+    if (Array.isArray(payload.results)) return payload.results;
+    const firstArray = Object.values(payload).find((value) => Array.isArray(value));
+    return Array.isArray(firstArray) ? firstArray : [];
+  };
+
+  const mergeLeaveConfigWithDbTypes = (baseConfig, rows = []) => {
+    const merged = normalizeLeaveConfig(baseConfig);
+    rows.forEach((row) => {
+      const leaveTypeLabel = getLeaveTypeLabelFromRow(row);
+      if (!leaveTypeLabel) return;
+      if (!Object.prototype.hasOwnProperty.call(merged, leaveTypeLabel)) {
+        merged[leaveTypeLabel] = 0;
+      }
+    });
+    return merged;
+  };
+
+  const fetchLeaveTypesFromDb = async () => {
+    try {
+      const res = await leaveTypesAPI.list();
+      const rows = extractLeaveTypeRows(res);
+      setLeaveTypeRows(rows);
+      setLeaveConfig((prev) => mergeLeaveConfigWithDbTypes(prev, rows));
+    } catch (err) {
+      console.warn('Failed to fetch leave types from leave-types API:', err);
+    }
+  };
+
+  const buildLeaveTypePayloads = (leaveType, days) => {
+    const safeDays = Number.isFinite(Number(days)) ? Number(days) : 0;
+    return [
+      { name: leaveType, default_days_per_year: safeDays },
+      { leave_type: leaveType, default_days_per_year: safeDays },
+      { name: leaveType, days_per_year: safeDays },
+      { leave_type: leaveType, days_per_year: safeDays },
+      { name: leaveType, days: safeDays },
+      { leave_type: leaveType, days: safeDays },
+      { name: leaveType, allowed_days: safeDays },
+      { leave_type: leaveType, allowed_days: safeDays }
+    ];
+  };
+
+  const syncLeaveTypesToDb = async (config) => {
+    const normalizedConfig = normalizeLeaveConfig(config);
+    const leaveTypeNames = Object.keys(normalizedConfig);
+    if (leaveTypeNames.length === 0) return;
+
+    let rows = [];
+    try {
+      const listed = await leaveTypesAPI.list();
+      rows = extractLeaveTypeRows(listed);
+    } catch (listError) {
+      console.warn('Failed to list leave types before sync:', listError);
+    }
+
+    if (rows.length === 0) {
+      try {
+        await leaveTypesAPI.migrateFromSettings();
+        const listedAfterMigrate = await leaveTypesAPI.list();
+        rows = extractLeaveTypeRows(listedAfterMigrate);
+      } catch (migrateError) {
+        console.warn('leave-types migrate-from-settings failed:', migrateError);
+      }
+    }
+
+    const rowByName = new Map();
+    rows.forEach((row) => {
+      const label = getLeaveTypeLabelFromRow(row).toLowerCase();
+      if (!label) return;
+      rowByName.set(label, row);
+    });
+
+    for (const [leaveType, days] of Object.entries(normalizedConfig)) {
+      const matchedRow = rowByName.get(String(leaveType || '').toLowerCase());
+      const payloads = buildLeaveTypePayloads(leaveType, days);
+
+      if (matchedRow) {
+        const typeId = getLeaveTypeIdFromRow(matchedRow);
+        if (typeId == null) continue;
+
+        let updated = false;
+        let lastError = null;
+        for (const payload of payloads) {
+          try {
+            await leaveTypesAPI.update(typeId, payload);
+            updated = true;
+            break;
+          } catch (err) {
+            lastError = err;
+          }
+        }
+        if (!updated && lastError) {
+          throw lastError;
+        }
+        continue;
+      }
+
+      let created = false;
+      let createError = null;
+      for (const payload of payloads) {
+        try {
+          await leaveTypesAPI.create(payload);
+          created = true;
+          break;
+        } catch (err) {
+          createError = err;
+        }
+      }
+      if (!created && createError) {
+        throw createError;
+      }
+    }
+
+    await fetchLeaveTypesFromDb();
+  };
 
 
 
@@ -285,12 +487,120 @@ const [showConfiguredList, setShowConfiguredList] = useState(true);
     if (hasAdminAccess) {
       fetchSettings();
       fetchUsageStats();
+      fetchLeaveTypesFromDb();
     }
   }, [hasAdminAccess]);
 
   // useEffect(() => {
   // fetchConfiguredLeaves();
   // }, []);
+
+  const handleAddHolidayType = async () => {
+    const value = (newHolidayType || '').trim();
+    if (!value) return;
+    const normalizedName = value.toLowerCase();
+    const duplicateExists = (holidayTypes || []).some(
+      (item) => String(item?.name || '').trim().toLowerCase() === normalizedName
+    );
+    if (duplicateExists) {
+      setError('This holiday type already exists.');
+      setTimeout(() => setError(null), 3000);
+      return;
+    }
+
+    try {
+      // const response = await calendarAPI.addHolidayType(value);
+      // const dbHolidayTypeNames = Array.isArray(response?.holiday_types) ? response.holiday_types : [];
+      // const existingColorMap = new Map(
+      //   normalizeHolidayTypes(holidayTypes).map((item) => [
+      //     String(item?.name || '').trim().toLowerCase(),
+      //     item?.color || '#3B82F6'
+      //   ])
+      // );
+      const selectedColor = String(holidayTypeColorInput || '#3B82F6').trim() || '#3B82F6';
+      // existingColorMap.set(value.toLowerCase(), selectedColor);
+      const response = await calendarAPI.addHolidayType(value, selectedColor);
+      const dbHolidayTypeNames = Array.isArray(response?.holiday_types) ? response.holiday_types : [];
+      const dbColorMap = response?.holiday_type_colors || {};
+
+      const nextHolidayTypes = dbHolidayTypeNames.map((name) => ({
+        name,
+        color: dbColorMap[name] || '#3B82F6'
+      }));
+
+      setHolidayTypes(nextHolidayTypes);
+      await saveHolidayTypes(nextHolidayTypes);
+      setLeaveHolidayType(value);
+      setLeaveColor(selectedColor);
+      setHolidayTypeColorInput(selectedColor);
+      setNewHolidayType('');
+    } catch (err) {
+      console.error('Failed to add holiday type:', err);
+      setError(err?.response?.data?.detail || 'Failed to add holiday type');
+      setTimeout(() => setError(null), 4000);
+    }
+  };
+
+  const handleDeleteHolidayType = async (rawHolidayType) => {
+    const value = String(rawHolidayType || leaveHolidayType || '').trim();
+    if (!value) return;
+    if (!window.confirm(`Delete holiday type "${value}"?`)) return;
+
+    try {
+      const response = await calendarAPI.deleteHolidayType(value);
+      const dbHolidayTypeNames = Array.isArray(response?.holiday_types) ? response.holiday_types : [];
+      const existingColorMap = new Map(
+        normalizeHolidayTypes(holidayTypes).map((item) => [
+          String(item?.name || '').trim().toLowerCase(),
+          item?.color || '#3B82F6'
+        ])
+      );
+      const nextHolidayTypes = dbHolidayTypeNames.map((name) => ({
+        name,
+        color: existingColorMap.get(String(name || '').trim().toLowerCase()) || '#3B82F6'
+      }));
+
+      setHolidayTypes(nextHolidayTypes);
+      await saveHolidayTypes(nextHolidayTypes);
+
+      if (String(leaveHolidayType || '').trim().toLowerCase() === value.toLowerCase()) {
+        const nextSelectedType = nextHolidayTypes[0]?.name || '';
+        setLeaveHolidayType(nextSelectedType);
+        setLeaveColor(nextSelectedType ? getHolidayTypeColor(nextSelectedType) : '');
+      }
+    } catch (err) {
+      console.error('Failed to delete holiday type:', err);
+      setError(err?.response?.data?.detail || 'Failed to delete holiday type');
+      setTimeout(() => setError(null), 4000);
+    }
+  };
+
+  const handleHolidayTypeColorInputChange = (rawValue) => {
+    setHolidayTypeColorInput(normalizeHexColor(rawValue, '#3B82F6'));
+  };
+
+  const handleHolidayTypeColorInputBlur = () => {
+    setHolidayTypeColorInput((prev) => normalizeHexColor(prev, '#3B82F6'));
+  };
+
+  const handleUpdateHolidayTypeColor = async (typeName, rawColor) => {
+    const normalizedName = String(typeName || '').trim().toLowerCase();
+    if (!normalizedName) return;
+
+    const nextColor = normalizeHexColor(rawColor, '#3B82F6');
+    const nextHolidayTypes = normalizeHolidayTypes(holidayTypes).map((item) => {
+      const currentName = String(item?.name || '').trim();
+      if (currentName.toLowerCase() !== normalizedName) return item;
+      return { ...item, color: nextColor };
+    });
+
+    setHolidayTypes(nextHolidayTypes);
+    if (String(leaveHolidayType || '').trim().toLowerCase() === normalizedName) {
+      setLeaveColor(nextColor);
+    }
+    await saveHolidayTypes(nextHolidayTypes);
+  };
+ 
 
   
   const fetchUsageStats = async () => {
@@ -346,6 +656,7 @@ const [showConfiguredList, setShowConfiguredList] = useState(true);
         console.log('🔄 Real-time settings update received:', data);
         // Refresh settings when updated by another admin
         fetchSettings();
+        fetchLeaveTypesFromDb();
         setSuccess('Settings updated in real-time!');
         setTimeout(() => setSuccess(null), 3000);
       }
@@ -557,16 +868,16 @@ const [showConfiguredList, setShowConfiguredList] = useState(true);
               ? cachedLeaveConfig
               : normalizeLeaveConfig(leaveConfig));
 
-        setLeaveConfig(resolvedLeaveConfig);
+        setLeaveConfig(mergeLeaveConfigWithDbTypes(resolvedLeaveConfig, leaveTypeRows));
         if (Object.keys(resolvedLeaveConfig).length > 0) {
           persistLeaveConfigCache(resolvedLeaveConfig);
         }
       } else if (Object.keys(leaveConfig || {}).length === 0) {
         // Initialize only when no local leave config exists yet.
         if (Object.keys(cachedLeaveConfig).length > 0) {
-          setLeaveConfig(cachedLeaveConfig);
+          setLeaveConfig(mergeLeaveConfigWithDbTypes(cachedLeaveConfig, leaveTypeRows));
         } else {
-          setLeaveConfig({});
+          setLeaveConfig(mergeLeaveConfigWithDbTypes({}, leaveTypeRows));
           persistLeaveConfigCache({});
         }
       }
@@ -584,6 +895,35 @@ const [showConfiguredList, setShowConfiguredList] = useState(true);
           auto_clock_in: true,
           auto_clock_out: true
         });
+      }
+
+      const parsedHolidayTypes = normalizeHolidayTypes(parsedOtherSettings?.holiday_types);
+      let resolvedHolidayTypes = parsedHolidayTypes;
+      try {
+        const holidayTypeResponse = await calendarAPI.getHolidayTypes();
+        const dbHolidayTypeNames = Array.isArray(holidayTypeResponse?.holiday_types)
+          ? holidayTypeResponse.holiday_types
+          : [];
+        const dbColorMap = holidayTypeResponse?.holiday_type_colors || {};  
+        if (dbHolidayTypeNames.length > 0) {
+          // const existingColorMap = new Map(
+          //   parsedHolidayTypes.map((item) => [
+          //     String(item?.name || '').trim().toLowerCase(),
+          //     item?.color || '#3B82F6'
+          //   ])
+          // );
+          resolvedHolidayTypes = dbHolidayTypeNames.map((name) => ({
+            name,
+            color: dbColorMap[name] || '#3B82F6'
+          }));
+        }
+      } catch (holidayTypesErr) {
+        console.warn('Failed to load table-backed holiday types:', holidayTypesErr);
+      }
+
+      setHolidayTypes(resolvedHolidayTypes);
+      if (resolvedHolidayTypes.length > 0 && !resolvedHolidayTypes.some((item) => String(item?.name || '').trim() === String(leaveHolidayType || '').trim())) {
+        setLeaveHolidayType(resolvedHolidayTypes[0].name);
       }
       
     } catch (err) {
@@ -676,12 +1016,14 @@ const [showConfiguredList, setShowConfiguredList] = useState(true);
         other_settings: {
           ...existingOtherSettings,
           leave_config: normalizedLeaveConfig,
+          holiday_types: normalizeHolidayTypes(holidayTypes),
           door_access_config: doorAccessConfig
           // Payroll config is now managed in accountant Settings, so we preserve it but don't modify it here
         }
       };
       
       const response = await api.put('/settings/', updateData);
+      await syncLeaveTypesToDb(normalizedLeaveConfig);
       
       // Update local settings state immediately to prevent state loss
       setSettings(response.data);
@@ -722,6 +1064,11 @@ const [showConfiguredList, setShowConfiguredList] = useState(true);
       setError(null);
       const existingOtherSettings = parseJsonLike(settings?.other_settings) || {};
       const normalizedLeaveConfig = normalizeLeaveConfig(nextLeaveConfig);
+      const resolvedHolidayTypes = normalizeHolidayTypes(
+        Array.isArray(holidayTypes) && holidayTypes.length > 0
+          ? holidayTypes
+          : existingOtherSettings?.holiday_types
+      );
       // Optimistic update to keep UI stable while request is in flight.
       setLeaveConfig(normalizedLeaveConfig);
       persistLeaveConfigCache(normalizedLeaveConfig);
@@ -729,9 +1076,11 @@ const [showConfiguredList, setShowConfiguredList] = useState(true);
         other_settings: {
           ...existingOtherSettings,
           leave_config: normalizedLeaveConfig,
+          holiday_types: resolvedHolidayTypes,
           door_access_config: doorAccessConfig
         }
       });
+      await syncLeaveTypesToDb(normalizedLeaveConfig);
 
       const parsedOtherSettings = parseJsonLike(response?.data?.other_settings) || {};
       const parsedLeaveConfig = parseJsonLike(parsedOtherSettings?.leave_config);
@@ -755,6 +1104,12 @@ const [showConfiguredList, setShowConfiguredList] = useState(true);
           updated_by: user?.email || user?.first_name,
           timestamp: new Date().toISOString()
         });
+        sendRealTimeMessage('calendar_update', {
+          type: 'calendar_update',
+          action: 'holiday_types_updated',
+          updated_by: user?.email || user?.first_name,
+          timestamp: new Date().toISOString()
+        });
       }
 
       window.dispatchEvent(new CustomEvent('settings-update', {
@@ -763,11 +1118,87 @@ const [showConfiguredList, setShowConfiguredList] = useState(true);
           settings: response.data
         }
       }));
+
+      window.dispatchEvent(new CustomEvent('settings-update', {
+        detail: {
+          type: 'calendar_update',
+          action: 'holiday_types_updated'
+        }
+      }));
     } catch (err) {
       console.error('Error updating leave configuration:', err);
       setError(err.response?.data?.detail || 'Failed to update leave configuration');
     } finally {
       setSavingLeaveConfig(false);
+    }
+  };
+
+  const saveHolidayTypes = async (nextHolidayTypes) => {
+    try {
+      setSaving(true);
+      setError(null);
+      const normalizedHolidayTypes = normalizeHolidayTypes(nextHolidayTypes);
+      const existingOtherSettings = parseJsonLike(settings?.other_settings) || {};
+      const normalizedLeaveConfig = normalizeLeaveConfig(leaveConfig);
+
+      const response = await api.put('/settings/', {
+        other_settings: {
+          ...existingOtherSettings,
+          leave_config: normalizedLeaveConfig,
+          holiday_types: normalizedHolidayTypes,
+          door_access_config: doorAccessConfig
+        }
+      });
+
+      // Use backend response as source of truth to ensure values are truly persisted in DB.
+      const parsedOtherSettings = parseJsonLike(response?.data?.other_settings) || {};
+      const persistedHolidayTypes = normalizeHolidayTypes(parsedOtherSettings?.holiday_types);
+      setHolidayTypes(persistedHolidayTypes.length > 0 ? persistedHolidayTypes : normalizedHolidayTypes);
+      if (
+        leaveHolidayType &&
+        !persistedHolidayTypes.some(
+          (item) => String(item?.name || '').trim().toLowerCase() === String(leaveHolidayType || '').trim().toLowerCase()
+        )
+      ) {
+        setLeaveHolidayType(persistedHolidayTypes[0]?.name || '');
+      }
+      setSettings(response.data);
+      setSuccess('Holiday types updated successfully!');
+      setTimeout(() => setSuccess(null), 3000);
+
+      if (isConnected) {
+        sendRealTimeMessage('settings_update', {
+          type: 'settings_update',
+          settings: response.data,
+          updated_by: user?.email || user?.first_name,
+          timestamp: new Date().toISOString()
+        });
+        sendRealTimeMessage('calendar_update', {
+          type: 'calendar_update',
+          action: 'holiday_types_updated',
+          updated_by: user?.email || user?.first_name,
+          timestamp: new Date().toISOString()
+        });
+      }
+
+      window.dispatchEvent(new CustomEvent('settings-update', {
+        detail: {
+          type: 'settings_update',
+          settings: response.data
+        }
+      }));
+
+      window.dispatchEvent(new CustomEvent('settings-update', {
+        detail: {
+          type: 'calendar_update',
+          action: 'holiday_types_updated'
+        }
+      }));
+    } catch (err) {
+      console.error('Error updating holiday types:', err);
+      setError(err.response?.data?.detail || 'Failed to update holiday types');
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -780,6 +1211,21 @@ const [showConfiguredList, setShowConfiguredList] = useState(true);
       return;
     }
 
+    try {
+      try {
+        await leaveTypesAPI.create({ name: leaveType });
+      } catch {
+        // Backward compatibility if API expects leave_type field.
+        await leaveTypesAPI.create({ leave_type: leaveType });
+      }
+      await fetchLeaveTypesFromDb();
+    } catch (createError) {
+      console.error('Failed to create leave type via leave-types API:', createError);
+      setError(createError?.response?.data?.detail || 'Failed to create leave type in database');
+      setTimeout(() => setError(null), 4000);
+      return;
+    }
+
     const nextLeaveConfig = {
       ...leaveConfig,
       [leaveType]: 0
@@ -788,6 +1234,43 @@ const [showConfiguredList, setShowConfiguredList] = useState(true);
   };
 
   const handleDeleteLeaveType = async (leaveType) => {
+    const normalizedTarget = String(leaveType || '').trim().toLowerCase();
+    let matchingRow = leaveTypeRows.find((row) => getLeaveTypeLabelFromRow(row).toLowerCase() === normalizedTarget);
+
+    if (!matchingRow) {
+      try {
+        await leaveTypesAPI.migrateFromSettings();
+      } catch (migrateError) {
+        console.warn('Leave type migration before delete failed:', migrateError);
+      }
+
+      try {
+        const res = await leaveTypesAPI.list();
+        const rows = extractLeaveTypeRows(res);
+        setLeaveTypeRows(rows);
+        matchingRow = rows.find((row) => getLeaveTypeLabelFromRow(row).toLowerCase() === normalizedTarget);
+      } catch (fetchError) {
+        console.warn('Failed to refetch leave types before delete:', fetchError);
+      }
+    }
+
+    const typeId = getLeaveTypeIdFromRow(matchingRow);
+    if (typeId == null) {
+      setError('Could not find leave type in database. Please refresh and try again.');
+      setTimeout(() => setError(null), 4000);
+      return;
+    }
+
+    try {
+      await leaveTypesAPI.delete(typeId);
+      await fetchLeaveTypesFromDb();
+    } catch (deleteError) {
+      console.error('Failed to delete leave type via leave-types API:', deleteError);
+      setError(deleteError?.response?.data?.detail || 'Failed to delete leave type from database');
+      setTimeout(() => setError(null), 4000);
+      return;
+    }
+
     const nextLeaveConfig = { ...leaveConfig };
     delete nextLeaveConfig[leaveType];
     await saveLeaveConfig(nextLeaveConfig, `${leaveType} removed successfully!`);
@@ -1541,6 +2024,8 @@ const handleDeleteLeaveFile = async (fileId) => {
         <div className="space-y-4">
           <p className="text-sm text-gray-600 mb-4">
             Configure the number of leave days allowed per leave type for your company. These values will be used to calculate leave balances for all employees.
+            <br />
+            Note: Leave types that include the word "permission" are treated as hour-based and will show values in hours here.
           </p>
           {Object.keys(leaveConfig).length === 0 ? (
             <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-4">
@@ -1577,41 +2062,43 @@ const handleDeleteLeaveFile = async (fileId) => {
             </div>
           ) : null}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
-            {Object.entries(leaveConfig).map(([leaveType, days]) => (
-              <div key={leaveType} className="flex items-center justify-between p-4 border border-gray-200 rounded-lg">
-                <label className="text-sm font-medium text-gray-700 flex-1">
-                  {leaveType}
-                </label>
-                <div className="flex items-center space-x-2">
-                  <input
-                    type="number"
-                    min="0"
-                    max="365"
-                    value={days}
-                    onChange={(e) => {
-                      const newValue = parseInt(e.target.value) || 0;
-                      setLeaveConfig({
-                        ...leaveConfig,
-                        [leaveType]: newValue
-                      });
-                    }}
-                    className="w-20 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent text-right"
-                  />
-                  <span className="text-sm text-gray-500">days</span>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const nextLeaveConfig = { ...leaveConfig };
-                      delete nextLeaveConfig[leaveType];
-                      setLeaveConfig(nextLeaveConfig);
-                    }}
-                    className="px-2 py-1 bg-red-100 text-red-700 rounded-md hover:bg-red-200 transition-colors text-xs"
-                  >
-                    Delete
-                  </button>
+            {Object.entries(leaveConfig).map(([leaveType, days]) => {
+              const normalized = String(leaveType || '').toLowerCase().replace(/[_\-]+/g, ' ').trim();
+              const isPermission = normalized.includes('permission');
+              return (
+                <div key={leaveType} className="flex items-center justify-between p-4 border border-gray-200 rounded-lg">
+                  <label className="text-sm font-medium text-gray-700 flex-1">
+                    {leaveType}
+                  </label>
+                  <div className="flex items-center space-x-2">
+                    <input
+                      type="number"
+                      min={isPermission ? '0' : '0'}
+                      max={isPermission ? '24' : '365'}
+                      step={isPermission ? '0.5' : '1'}
+                      value={days}
+                      onChange={(e) => {
+                        const raw = e.target.value;
+                        const newValue = isPermission ? parseFloat(raw) || 0 : parseInt(raw) || 0;
+                        setLeaveConfig({
+                          ...leaveConfig,
+                          [leaveType]: newValue
+                        });
+                      }}
+                      className="w-20 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent text-right"
+                    />
+                    <span className="text-sm text-gray-500">{isPermission ? 'hours' : 'days'}</span>
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteLeaveType(leaveType)}
+                      className="px-2 py-1 bg-red-100 text-red-700 rounded-md hover:bg-red-200 transition-colors text-xs"
+                    >
+                      Delete
+                    </button>
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
           <div className="mt-4 p-4 bg-gray-50 rounded-lg border border-gray-200">
             <h4 className="text-sm font-semibold text-gray-900 mb-2">Add Leave Type</h4>
@@ -1626,10 +2113,7 @@ const handleDeleteLeaveFile = async (fileId) => {
                     const input = e.target;
                     const leaveType = input.value.trim();
                     if (leaveType && !leaveConfig[leaveType]) {
-                      setLeaveConfig({
-                        ...leaveConfig,
-                        [leaveType]: 0
-                      });
+                      handleAddLeaveType(leaveType);
                       input.value = '';
                     }
                   }
@@ -1640,10 +2124,7 @@ const handleDeleteLeaveFile = async (fileId) => {
                   const input = document.getElementById('newLeaveType');
                   const leaveType = input?.value.trim();
                   if (leaveType && !leaveConfig[leaveType]) {
-                    setLeaveConfig({
-                      ...leaveConfig,
-                      [leaveType]: 0
-                    });
+                    handleAddLeaveType(leaveType);
                     if (input) input.value = '';
                   }
                 }}
@@ -1734,10 +2215,31 @@ const handleDeleteLeaveFile = async (fileId) => {
         </div>
         <div>
            <button
-    onClick={() => setShowLeaveModal(true)}
+    onClick={() => {
+      setEditingLeave(null);
+      setLeaveTitle('');
+      setLeaveDate(new Date());
+      setLeaveColor('');
+      const firstType = holidayTypes?.[0]?.name || '';
+      setLeaveHolidayType(firstType);
+      if (firstType) {
+        setLeaveColor(getHolidayTypeColor(firstType));
+      }
+      setShowLeaveModal(true);
+    }}
     className="bg-[#181c52] text-white px-4 py-2 rounded-lg hover:bg-[#2c2f72]"
   >
     ➕ Add Leave
+  </button>
+  <button
+    onClick={() => {
+      setNewHolidayType('');
+      setHolidayTypeColorInput('#3B82F6');
+      setShowHolidayTypeModal(true);
+    }}
+    className="ml-2 bg-white text-[#181c52] border border-[#181c52] px-4 py-2 rounded-lg hover:bg-gray-50"
+  >
+    Manage Holiday Types
   </button>
         </div>
         <div className="space-y-4">
@@ -1797,6 +2299,12 @@ const handleDeleteLeaveFile = async (fileId) => {
                         setLeaveTitle(event.title);
                         setLeaveDate(event.start_date ? new Date(event.start_date) : new Date());
                         setLeaveColor(event.color || '');
+                        const eventHolidayType =
+                          event.holiday_type ||
+                          event?.recurring_pattern?.holiday_type ||
+                          holidayTypes?.[0]?.name ||
+                          '';
+                        setLeaveHolidayType(eventHolidayType);
                         setShowLeaveModal(true);
                       }}
                       className="px-3 py-1 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm"
@@ -1885,7 +2393,7 @@ const handleDeleteLeaveFile = async (fileId) => {
       </div>
 
 
-       {showLeaveModal && (
+        {showLeaveModal && (
   <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center">
     <div className="bg-white rounded-xl shadow-xl w-[420px] p-6">
       
@@ -1911,6 +2419,34 @@ const handleDeleteLeaveFile = async (fileId) => {
       />
 
       <label className="block text-sm font-medium text-gray-700 mb-2">
+        Holiday Type
+      </label>
+      <select
+        value={leaveHolidayType}
+        onChange={(e) => {
+          const selectedType = e.target.value;
+          setLeaveHolidayType(selectedType);
+          setLeaveColor(getHolidayTypeColor(selectedType));
+        }}
+        className="w-full border rounded-lg px-3 py-2 mb-2"
+      >
+        {holidayTypeNames.length === 0 ? (
+          <option value="" disabled>
+            No holiday types configured
+          </option>
+        ) : (
+          holidayTypeNames.map((type) => (
+            <option key={type} value={type}>
+              {String(type).replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}
+            </option>
+          ))
+        )}
+      </select>
+
+      <p className="text-xs text-gray-500 mb-4">To add or delete holiday types, use the "Manage Holiday Types" button.</p>
+ 
+
+      {/* <label className="block text-sm font-medium text-gray-700 mb-2">
   Leave Color
 </label>
 
@@ -1931,7 +2467,7 @@ const handleDeleteLeaveFile = async (fileId) => {
       aria-label={`Select color ${color}`}
     />
   ))}
-</div>
+</div> */}
 
 {/* Selected color preview */}
 <div className="flex items-center gap-2 text-sm text-gray-600">
@@ -1961,13 +2497,19 @@ const handleDeleteLeaveFile = async (fileId) => {
               return;
             }
 
+            if (!leaveHolidayType) {
+              alert('Holiday type required. Please select a holiday type.');
+              return;
+            }
+
             const toDateOnly = (d) => d.toISOString().split('T')[0];
 
             const payload = {
-              event_type: 'leave',
+              event_type: 'holiday',
               title: leaveTitle,
               // label the leave type so frontend can show it in lists
               leave_type: leaveTitle,
+                holiday_type: leaveHolidayType,
                   start_date: toDateOnly(leaveDate),
               end_date: null,
               all_day: true,
@@ -1978,7 +2520,10 @@ const handleDeleteLeaveFile = async (fileId) => {
               source_type: 'leave_configuration',
               source_id: null,
               is_recurring: false,
-              recurring_pattern: null,
+              // Persist holiday type in DB using JSON field (no schema migration needed).
+              recurring_pattern: {
+                holiday_type: leaveHolidayType
+              },
             };
 
             try {
@@ -2008,6 +2553,7 @@ const handleDeleteLeaveFile = async (fileId) => {
               setLeaveTitle('');
               setLeaveDate(new Date());
               setLeaveColor('');
+              setLeaveHolidayType(holidayTypes?.[0]?.name || '');
               setEditingLeave(null);
               // Refresh both calendar and configured list
               fetchEvents && fetchEvents();
@@ -2054,6 +2600,7 @@ const handleDeleteLeaveFile = async (fileId) => {
                 setLeaveTitle('');
                 setLeaveDate(new Date());
                 setLeaveColor('');
+                setLeaveHolidayType(holidayTypes?.[0]?.name || '');
                 setEditingLeave(null);
                 alert('Calendar endpoint is unavailable (404). Leave saved locally in this browser as a fallback.');
                 return;
@@ -2088,6 +2635,92 @@ const handleDeleteLeaveFile = async (fileId) => {
 
 
 
+  </div>
+)}
+
+{showHolidayTypeModal && (
+  <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center">
+    <div className="bg-white rounded-xl shadow-xl w-[520px] max-w-[95vw] p-6">
+      <h3 className="text-lg font-semibold mb-4">Manage Holiday Types</h3>
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4">
+        <input
+          type="text"
+          value={newHolidayType}
+          onChange={(e) => setNewHolidayType(e.target.value)}
+          placeholder="Holiday type name"
+          className="md:col-span-2 border rounded-lg px-3 py-2"
+        />
+        <input
+          type="color"
+          value={holidayTypeColorInput}
+          onChange={(e) => handleHolidayTypeColorInputChange(e.target.value)}
+          className="h-10 w-full border rounded-lg px-1 py-1"
+          aria-label="Holiday type color"
+        />
+      </div>
+
+      <input
+        type="text"
+        value={holidayTypeColorInput}
+        onChange={(e) => setHolidayTypeColorInput(e.target.value)}
+        onBlur={handleHolidayTypeColorInputBlur}
+        placeholder="#3B82F6"
+        className="w-full border rounded-lg px-3 py-2 mb-4 font-mono uppercase"
+        aria-label="Holiday type hex color code"
+      />
+
+      <div className="flex gap-2 mb-4">
+        <button
+          type="button"
+          onClick={handleAddHolidayType}
+          className="px-4 py-2 bg-[#181c52] text-white rounded-lg hover:bg-[#2c2f72]"
+        >
+          Add Type
+        </button>
+      </div>
+
+      <div className="max-h-56 overflow-y-auto border rounded-lg p-2 mb-4">
+        {holidayTypes.length === 0 ? (
+          <p className="text-sm text-gray-500 p-2">No holiday types added yet.</p>
+        ) : (
+          holidayTypes.map((item) => (
+            <div key={item.name} className="flex items-center justify-between p-2 border-b last:border-b-0">
+              <div className="flex items-center gap-2">
+                <span className="w-4 h-4 rounded-sm border" style={{ backgroundColor: item.color || '#3B82F6' }} />
+                <span className="text-sm font-medium">{item.name}</span>
+                <span className="text-xs font-mono text-gray-500">{normalizeHexColor(item.color || '#3B82F6')}</span>
+                <input
+                  type="color"
+                  value={normalizeHexColor(item.color || '#3B82F6')}
+                  onChange={(e) => handleUpdateHolidayTypeColor(item.name, e.target.value)}
+                  className="h-7 w-10 border rounded"
+                  aria-label={`Change color for ${item.name}`}
+                />
+              </div>
+              <button
+                type="button"
+                onClick={async () => {
+                  await handleDeleteHolidayType(item.name);
+                }}
+                className="px-2 py-1 text-xs bg-red-600 text-white rounded hover:bg-red-700"
+              >
+                Remove
+              </button>
+            </div>
+          ))
+        )}
+      </div>
+
+      <div className="flex justify-end gap-3">
+        <button
+          onClick={() => setShowHolidayTypeModal(false)}
+          className="px-4 py-2 border rounded-lg"
+        >
+          Close
+        </button>
+      </div>
+    </div>
   </div>
 )}
 

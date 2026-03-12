@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { FiCalendar, FiInfo, FiCheckCircle, FiXCircle, FiClock } from 'react-icons/fi';
-import api, { leavePolicyAPI } from '../../services/api';
+import api, { leavePolicyAPI, leaveTypesAPI } from '../../services/api';
 
 export default function LeavePolicies() {
   const [policies, setPolicies] = useState([]);
@@ -16,8 +16,9 @@ export default function LeavePolicies() {
       setLoading(true);
       setError(null);
       // Fetch active policies and configured leave types from settings
-      const [policiesData, leaveConfigResponse] = await Promise.all([
+      const [policiesData, leaveTypesResponse, leaveConfigResponse] = await Promise.all([
         leavePolicyAPI.getPolicies(true),
+        leaveTypesAPI.list().catch(() => null),
         api.get('/settings/leave-config').catch(() => ({ data: { leave_config: {} } }))
       ]);
 
@@ -28,7 +29,22 @@ export default function LeavePolicies() {
           .replace(/[_-]+/g, ' ')
           .replace(/\s+/g, ' ');
 
-      const configuredLeaveTypes = Object.keys(leaveConfigResponse?.data?.leave_config || {});
+      const leaveTypeRows = Array.isArray(leaveTypesResponse)
+        ? leaveTypesResponse
+        : Array.isArray(leaveTypesResponse?.data)
+          ? leaveTypesResponse.data
+          : Array.isArray(leaveTypesResponse?.items)
+            ? leaveTypesResponse.items
+            : [];
+
+      const configuredLeaveTypesFromDb = leaveTypeRows
+        .map((row) => String(row?.leave_type || row?.name || row?.type_name || '').trim())
+        .filter(Boolean);
+
+      const configuredLeaveTypesFromSettings = Object.keys(leaveConfigResponse?.data?.leave_config || {});
+      const configuredLeaveTypes = configuredLeaveTypesFromDb.length > 0
+        ? configuredLeaveTypesFromDb
+        : configuredLeaveTypesFromSettings;
       const configuredLeaveTypeSet = new Set(configuredLeaveTypes.map(normalizeLeaveType));
       const safePolicies = Array.isArray(policiesData) ? policiesData : [];
 

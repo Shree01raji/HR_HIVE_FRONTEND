@@ -7,23 +7,49 @@ export default function PanelSwitcher() {
   const { user } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
+  const hasEmployeeId = Number(user?.employee_id) > 0;
+
+  const ensureOrganizationSlug = () => {
+    let selectedOrganization = localStorage.getItem('selectedOrganization');
+    if (selectedOrganization && selectedOrganization.trim() !== '') {
+      return;
+    }
+
+    try {
+      const organizationDataRaw = localStorage.getItem('organizationData');
+      if (organizationDataRaw) {
+        const organizationData = JSON.parse(organizationDataRaw);
+        const recoveredSlug = organizationData?.slug || organizationData?.organization_slug;
+        if (recoveredSlug && String(recoveredSlug).trim() !== '') {
+          localStorage.setItem('selectedOrganization', String(recoveredSlug).trim());
+          return;
+        }
+      }
+    } catch (_error) {
+      // Ignore parse issues and try user payload fallback below.
+    }
+
+    const userSlug = user?.organization_slug || user?.organization?.slug;
+    if (userSlug && String(userSlug).trim() !== '') {
+      localStorage.setItem('selectedOrganization', String(userSlug).trim());
+    }
+  };
   
   // Check if user is accountant
   // Check multiple ways: role, localStorage flag, and RBAC roles
   const isAccountantByRole = user?.role === 'ACCOUNTANT' || user?.role?.toUpperCase() === 'ACCOUNTANT';
   const isAccountantFlag = localStorage.getItem('isAccountant') === 'true';
-  const userRoles = JSON.parse(localStorage.getItem('userRoles') || '[]');
+  let userRoles = [];
+  try { userRoles = JSON.parse(localStorage.getItem('userRoles') || '[]'); } catch (_) { userRoles = []; }
   const hasAccountsRole = userRoles.includes('ACCOUNTS') || userRoles.includes('accounts');
   const isAccountant = isAccountantByRole || isAccountantFlag || hasAccountsRole;
   
-  // Check if user is HR/Admin (has employee_id, so they can access employee portal)
+// Check if user is HR/Admin with employee profile access
   const userRole = user?.role?.toUpperCase() || '';
-  // Treat both ADMIN and HR_MANAGER as having full admin access
   const isAdminOrHR = userRole === 'ADMIN' || userRole === 'HR_MANAGER';
-  const hasEmployeeId = user?.employee_id && user.employee_id > 0;
   const isHRWithEmployeeAccess = isAdminOrHR && hasEmployeeId;
 
-  // Manager with employee access
+  // Manager with employee access must have linked employee profile
   const isManager = userRole === 'MANAGER';
   const isManagerWithEmployeeAccess = isManager && hasEmployeeId;
 
@@ -35,6 +61,7 @@ export default function PanelSwitcher() {
     const isAccountantPanel = location.pathname.startsWith('/accountant');
     
     const switchToEmployee = () => {
+      ensureOrganizationSlug();
       navigate('/employee');
     };
     
@@ -78,6 +105,7 @@ export default function PanelSwitcher() {
     const isAdminPanel = location.pathname.startsWith('/admin');
     
     const switchToEmployee = () => {
+      ensureOrganizationSlug();
       navigate('/employee');
     };
     
@@ -121,6 +149,7 @@ export default function PanelSwitcher() {
     const isManagerPanel = location.pathname.startsWith('/manager');
     
     const switchToEmployee = () => {
+      ensureOrganizationSlug();
       navigate('/employee');
     };
     
@@ -161,4 +190,5 @@ export default function PanelSwitcher() {
   // No switcher for other users
   return null;
 }
+
 

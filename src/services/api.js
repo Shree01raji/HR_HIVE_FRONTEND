@@ -81,6 +81,24 @@ api.interceptors.request.use(
         console.log(`[API Request] 📍 Extracted organization slug from URL: ${selectedOrganization}`);
       }
     }
+
+    // Recover missing slug from cached organization metadata.
+    if (!selectedOrganization) {
+      try {
+        const organizationDataRaw = localStorage.getItem('organizationData');
+        if (organizationDataRaw) {
+          const organizationData = JSON.parse(organizationDataRaw);
+          const recoveredSlug = organizationData?.slug || organizationData?.organization_slug;
+          if (recoveredSlug && String(recoveredSlug).trim() !== '') {
+            selectedOrganization = String(recoveredSlug).trim();
+            localStorage.setItem('selectedOrganization', selectedOrganization);
+            console.log(`[API Request] ♻️ Recovered organization slug from organizationData: ${selectedOrganization}`);
+          }
+        }
+      } catch (error) {
+        console.warn('[API Request] Could not parse organizationData while recovering slug:', error);
+      }
+    }
     
     if (selectedOrganization) {
       config.headers['X-Organization-Slug'] = selectedOrganization;
@@ -328,43 +346,90 @@ api.interceptors.response.use(
       // Check error detail to determine if it's a real auth failure
       const errorDetail = error.response?.data?.detail || '';
       const normalizedDetail = String(errorDetail).toLowerCase();
-      const isAuthError = normalizedDetail.includes('token') ||
-                          normalizedDetail.includes('credentials') ||
-                          normalizedDetail.includes('expired') ||
-                          normalizedDetail.includes('invalid') ||
-                          normalizedDetail.includes('not authenticated') ||
-                          normalizedDetail.includes('user not found') ||
-                          errorDetail === 'Invalid or expired token';
+      // const isAuthError = normalizedDetail.includes('token') ||
+      //                     normalizedDetail.includes('credentials') ||
+      //                     normalizedDetail.includes('expired') ||
+      //                     normalizedDetail.includes('invalid') ||
+      //                     normalizedDetail.includes('not authenticated') ||
+      //                     normalizedDetail.includes('user not found') ||
+      //                     errorDetail === 'Invalid or expired token';
       
-      // Only redirect if it's a real authentication error, not a data/employee lookup issue
-      if (isAuthError) {
-      const token = localStorage.getItem('token');
-      if (token) {
-          console.log('Authentication error detected, clearing token and redirecting to login:', errorDetail);
-      localStorage.removeItem('token');
-        localStorage.removeItem('mustResetPassword');
-        localStorage.removeItem('selectedOrganization');
-        localStorage.removeItem('organizationData');
-        localStorage.removeItem('adminVerified');
-        localStorage.removeItem('adminVerifiedAt');
-        localStorage.removeItem('adminVerifiedUserEmail');
-        localStorage.removeItem('isOrganizationAdmin');
+      // // Only redirect if it's a real authentication error, not a data/employee lookup issue
+      // if (isAuthError) {
+      // const token = localStorage.getItem('token');
+      // if (token) {
+      //     console.log('Authentication error detected, clearing token and redirecting to login:', errorDetail);
+      // localStorage.removeItem('token');
+      //   localStorage.removeItem('mustResetPassword');
+      //   localStorage.removeItem('selectedOrganization');
+      //   localStorage.removeItem('organizationData');
+      //   localStorage.removeItem('adminVerified');
+      //   localStorage.removeItem('adminVerifiedAt');
+      //   localStorage.removeItem('adminVerifiedUserEmail');
+      //   localStorage.removeItem('isOrganizationAdmin');
         
-        // Only redirect if we're not already on login/register/landing pages
-        const currentPath = window.location.pathname;
-        if (!currentPath.includes('/login') && 
-            !currentPath.includes('/register') && 
-            !currentPath.includes('/landing') &&
-            !currentPath.includes('/reset-password')) {
-          // Use setTimeout to avoid navigation during render
-          setTimeout(() => {
-            window.location.href = '/login';
-          }, 100);
-        }
+      //   // Only redirect if we're not already on login/register/landing pages
+      //   const currentPath = window.location.pathname;
+      //   if (!currentPath.includes('/login') && 
+      //       !currentPath.includes('/register') && 
+      //       !currentPath.includes('/landing') &&
+      //       !currentPath.includes('/reset-password')) {
+      //     // Use setTimeout to avoid navigation during render
+      //     setTimeout(() => {
+      //       window.location.href = '/login';
+      //     }, 100);
+      //   }
+      const requestHeaders = error.config?.headers || {};
+      const hasOrgHeader = Boolean(requestHeaders['X-Organization-Slug'] || requestHeaders['x-organization-slug']);
+ 
+      const isTokenAuthError =
+        normalizedDetail.includes('invalid or expired token') ||
+        normalizedDetail.includes('token expired') ||
+        normalizedDetail.includes('could not validate credentials') ||
+        normalizedDetail.includes('not authenticated') ||
+        normalizedDetail.includes('missing authorization') ||
+        normalizedDetail.includes('invalid token') ||
+        normalizedDetail === 'invalid or expired token';
+ 
+      // If org context is missing, this is commonly a tenant-routing issue and not a real logout condition.
+      if (!hasOrgHeader) {
+        console.warn('401 received without X-Organization-Slug; skipping auto-logout to avoid false login redirects.', {
+          detail: errorDetail,
+          url: error.config?.url,
+        });
+        return Promise.reject(error);
+      }
+ 
+      // Only redirect if it's a strict token-auth failure.
+      if (isTokenAuthError) {
+        const token = localStorage.getItem('token');
+        if (token) {
+          console.log('Token authentication error detected, clearing token and redirecting to login:', errorDetail);
+          localStorage.removeItem('token');
+          localStorage.removeItem('mustResetPassword');
+          localStorage.removeItem('selectedOrganization');
+          localStorage.removeItem('organizationData');
+          localStorage.removeItem('adminVerified');
+          localStorage.removeItem('adminVerifiedAt');
+          localStorage.removeItem('adminVerifiedUserEmail');
+          localStorage.removeItem('isOrganizationAdmin');
+ 
+          // Only redirect if we're not already on login/register/landing pages
+          const currentPath = window.location.pathname;
+          if (!currentPath.includes('/login') &&
+              !currentPath.includes('/register') &&
+              !currentPath.includes('/landing') &&
+              !currentPath.includes('/reset-password')) {
+            // Use setTimeout to avoid navigation during render
+            setTimeout(() => {
+              window.location.href = '/login';
+            }, 100);
+          }
+ 
         }
       } else {
         // 401 but not an auth error - might be employee record issue
-        console.warn('401 error but not authentication failure:', errorDetail);
+        console.warn('401 error but not strict token auth failure ;skippng auto-logout:', errorDetail);
         // Don't redirect, let the component handle the error
       }
     } else if (error.response?.status === 502) {
@@ -702,6 +767,24 @@ export const leaveAPI = {
     const response = await api.post(`/leave/${id}/reject`, { reason });
     return response.data;
   },
+  update: async (id, payload) => {
+    try {
+      const response = await api.patch(`/leave/${id}`, payload);
+      return response.data;
+    } catch (error) {
+      // const response = await api.patch(`/leave/${encodeURIComponent(id)}`, leaveData);
+      // return response.data;
+    }
+  },
+  cancel: async (id) => {
+    try {
+      const response = await api.post(`/leave/${id}/cancel`);
+      return response.data;
+    } catch (error) {
+      // const response = await api.patch(`/leave/${encodeURIComponent(id)}`, { status: 'CANCELLED' });
+      // return response.data;
+    }
+  },
 };
 
 // Payroll API
@@ -855,7 +938,22 @@ export const calendarAPI = {
   deleteEvent: async (eventId) => {
     await api.delete(`/calendar/events/${eventId}`);
   },
-  
+
+  getHolidayTypes: async () => {
+    const response = await api.get('/calendar/holiday-types');
+    return response.data;
+  },
+ 
+  addHolidayType: async (name, color_code) => {
+    const response = await api.post('/calendar/holiday-types', { name, color_code });
+    return response.data;
+  },
+
+  deleteHolidayType: async (name) => {
+    const response = await api.delete(`/calendar/holiday-types/${encodeURIComponent(name)}`);
+    return response.data;
+  },
+
   // Google Calendar API
   getGoogleCalendarAuthUrl: async () => {
     const response = await api.get('/calendar/google/oauth/authorize');
@@ -1633,6 +1731,35 @@ export const timesheetAPI = {
   },
   getCurrentSession: async () => {
     const response = await api.get('/timesheet/current-session');
+    return response.data;
+  },
+  getTodaySession: async () => {
+    try {
+      const response = await api.get('/timesheet/today-session');
+      return response.data;
+    } catch (error) {
+      // Fallback for deployments still using the legacy endpoint name.
+      if (error?.response?.status === 404) {
+        const fallbackResponse = await api.get('/timesheet/current-session');
+        return fallbackResponse.data;
+      }
+      throw error;
+    }
+  },
+  clockIn: async (payload = {}) => {
+    const response = await api.post('/timesheet/clock-in', payload);
+    return response.data;
+  },
+  startBreak: async (payload = {}) => {
+    const response = await api.post('/timesheet/start-break', payload);
+    return response.data;
+  },
+  endBreak: async (payload = {}) => {
+    const response = await api.post('/timesheet/end-break', payload);
+    return response.data;
+  },
+  clockOut: async (payload = {}) => {
+    const response = await api.post('/timesheet/clock-out', payload);
     return response.data;
   },
   confirmAutoEntry: async (entryId) => {
@@ -2710,6 +2837,30 @@ export const leavePolicyAPI = {
     // Only include employee_ids in request body if it's provided
     const requestBody = employeeIds ? { employee_ids: employeeIds } : {};
     const response = await api.post(`/leave-policies/${policyId}/apply-to-employees`, requestBody);
+    return response.data;
+  }
+};
+
+// Leave Types API
+export const leaveTypesAPI = {
+  list: async () => {
+    const response = await api.get('/leave-types/leave-types/');
+    return response.data;
+  },
+  create: async (payload) => {
+    const response = await api.post('/leave-types/leave-types/', payload);
+    return response.data;
+  },
+  update: async (typeId, payload) => {
+    const response = await api.put(`/leave-types/leave-types/${typeId}`, payload);
+    return response.data;
+  },
+  delete: async (typeId) => {
+    const response = await api.delete(`/leave-types/leave-types/${typeId}`);
+    return response.data;
+  },
+  migrateFromSettings: async () => {
+    const response = await api.post('/leave-types/leave-types/migrate-from-settings');
     return response.data;
   }
 };

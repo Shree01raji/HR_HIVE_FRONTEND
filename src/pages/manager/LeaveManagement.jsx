@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { FiCheck, FiX, FiClock, FiUser, FiCalendar, FiFileText, FiChevronLeft, FiChevronRight, FiEye } from 'react-icons/fi';
-import { managerAPI } from '../../services/api';
+import { managerAPI, calendarAPI } from '../../services/api';
 
 export default function LeaveManagement() {
   const [leaves, setLeaves] = useState([]);
@@ -59,7 +59,34 @@ export default function LeaveManagement() {
 
   const handleApprove = async (leaveId) => {
     try {
-      await managerAPI.approveLeave(leaveId);
+      const resp = await managerAPI.approveLeave(leaveId);
+
+      // Create calendar event for the approved leave (best-effort)
+      try {
+        const approvedLeave = leaves.find(l => String(l.leave_id || l.id) === String(leaveId)) || resp || {};
+        const isPermission = String(approvedLeave.leave_type || '').toLowerCase().includes('permission');
+        const duration = String(approvedLeave.leave_duration || '').toLowerCase();
+        const all_day = !(isPermission || ['first_half', 'second_half'].includes(duration));
+
+        const eventPayload = {
+          event_type: 'leave',
+          title: approvedLeave.leave_type || 'Leave',
+          leave_type: approvedLeave.leave_type || null,
+          start_date: approvedLeave.start_date,
+          end_date: approvedLeave.end_date || approvedLeave.start_date,
+          all_day,
+          description: approvedLeave.notes || null,
+          employee_id: approvedLeave.employee_id || null,
+          source_type: 'leave',
+          source_id: approvedLeave.leave_id || approvedLeave.id || null,
+        };
+
+        console.log('[Manager Leave] Creating calendar event for approved leave:', eventPayload);
+        await calendarAPI.createEvent(eventPayload);
+      } catch (err) {
+        console.warn('Failed to create calendar event for approved leave (manager):', err);
+      }
+
       await fetchLeaves();
     } catch (err) {
       console.error('Failed to approve leave:', err);
