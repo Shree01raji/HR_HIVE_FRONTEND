@@ -4,6 +4,16 @@ import api from '../../services/api';
 import { WorkflowStatusCard, WorkflowDiagram, WorkflowTimeline } from '../../components/workflow';
 import { FiInfo, FiCheckCircle, FiXCircle, FiClock, FiCalendar, FiX } from 'react-icons/fi';
 
+// Helper to extract backend-calculated leave days from notes
+function getBackendLeaveDays(leave) {
+    const notes = String(leave?.notes || "");
+    const match = notes.match(/Leave days counted \(excluding weekends\/holidays\):\s*([0-9.]+)/i);
+    if (match) {
+        return Number(match[1]);
+    }
+    return null;
+}
+ 
 export default function LeaveManagement() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -30,6 +40,8 @@ export default function LeaveManagement() {
   const normalizeStatus = (value) => String(value || '').trim().toUpperCase();
   const isApprovedStatus = (value) => normalizeStatus(value) === 'APPROVED';
   const isRejectedStatus = (value) => ['REJECTED', 'DECLINED'].includes(normalizeStatus(value));
+  const isCanceledStatus = (value) => ['CANCELED', 'CANCELLED'].includes(normalizeStatus(value));
+  const isActiveAppliedStatus = (value) => ['PENDING', 'REQUESTED', 'APPROVED'].includes(normalizeStatus(value));
   const isPaidLeaveType = (value) => {
     const normalized = normalizeLeaveType(value);
     return normalized.includes('paid') && !normalized.includes('unpaid');
@@ -41,8 +53,10 @@ export default function LeaveManagement() {
   };
   const isPermissionType = (value) => {
     const normalized = String(value || '').toLowerCase().replace(/[_\-]+/g, ' ').trim();
+    // Do NOT include breveament here; breveament should be treated as a normal leave type, not as permission
     return normalized.includes('permission');
   };
+
 
   const getLeaveDurationType = (leave) => {
     const notes = String(leave?.notes || '');
@@ -86,18 +100,20 @@ export default function LeaveManagement() {
     return cleaned || 'No reason provided';
   };
 
-  const getLeaveDurationDays = (leave) => {
-    if (isHalfDayLeave(leave) && !isPermissionType(leave?.leave_type)) {
-      return 0.5;
-    }
-
-    const start = new Date(leave?.start_date);
-    const end = new Date(leave?.end_date || leave?.start_date);
-    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
-      return 0;
-    }
-    return Math.max(0, Math.ceil((end - start) / (1000 * 60 * 60 * 24)) + 1);
-  };
+  // Prefer backend-calculated leave days if present
+    const getLeaveDurationDays = (leave) => {
+        const backendDays = getBackendLeaveDays(leave);
+        if (backendDays !== null) return backendDays;
+        if (isHalfDayLeave(leave) && !isPermissionType(leave?.leave_type)) {
+            return 0.5;
+        }
+        const start = new Date(leave?.start_date);
+        const end = new Date(leave?.end_date || leave?.start_date);
+        if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+            return 0;
+        }
+        return Math.max(0, Math.ceil((end - start) / (1000 * 60 * 60 * 24)) + 1);
+    };
 
   const extractPermissionHours = (leave) => {
     const explicitHours = Number(leave?.permission_hours);
@@ -119,6 +135,28 @@ export default function LeaveManagement() {
 
   const getLeaveDurationHours = (leave) => getLeaveDurationDays(leave) * 8;
 
+  const getAppliedOnDate = (leave) => {
+    const candidates = [
+      leave?.applied_at,
+      leave?.applied_on,
+      leave?.requested_at,
+      leave?.request_date,
+      leave?.created_at,
+      leave?.created_on,
+      leave?.submitted_at,
+      leave?.submission_date,
+      leave?.updated_at
+    ];
+
+    const appliedDate = candidates.find((value) => {
+      if (!value) return false;
+      const parsed = new Date(value);
+      return !Number.isNaN(parsed.getTime());
+    });
+
+    return appliedDate || null;
+  };
+
   const requestedLeaves = useMemo(
     () => leaveHistory.filter((leave) => ['PENDING', 'REQUESTED'].includes(normalizeStatus(leave?.status))),
     [leaveHistory]
@@ -130,7 +168,40 @@ export default function LeaveManagement() {
   );
 
   const rejectedLeaves = useMemo(
-    () => leaveHistory.filter((leave) => ['REJECTED', 'DECLINED'].includes(normalizeStatus(leave?.status))),
+    () => leaveHistory.filter((leave) => ['REJECTED', 'DECLINED', 'CANCELED', 'CANCELLED'].includes(normalizeStatus(leave?.status))),
+    [leaveHistory]
+  );
+
+  const cancelledLeaves = useMemo(
+    () => leaveHistory.filter((leave) => {
+      if (!isCanceledStatus(leave?.status)) return false;
+
+      const cancelledBy = String(
+        leave?.cancelled_by_role ||
+        leave?.canceled_by_role ||
+        leave?.cancelled_by ||
+        leave?.canceled_by ||
+        ''
+      ).toUpperCase();
+
+      if (cancelledBy) {
+        return ['EMPLOYEE', 'SELF', 'USER'].some((token) => cancelledBy.includes(token));
+      }
+
+      const notes = String(leave?.notes || '').toLowerCase();
+      if (
+        notes.includes('cancelled by employee') ||
+        notes.includes('canceled by employee') ||
+        notes.includes('cancelled by self') ||
+        notes.includes('canceled by self')
+      ) {
+        return true;
+      }
+
+      // /leave/me only returns current employee records; when explicit metadata is absent,
+      // treat canceled records as self-canceled for this employee-facing view.
+      return true;
+    }),
     [leaveHistory]
   );
 
@@ -469,47 +540,58 @@ export default function LeaveManagement() {
         const totalAllowed = Number(leaveConfig[type]) || 0;
         const normalizedType = normalizeLeaveType(type);
         
-        // Count only APPROVED leaves as taken.
-        // REJECTED/DECLINED and pending/requested leaves do not reduce balance.
-        const usedLeaves = history.filter((leave) => {
+        const approvedLeavesForType = history.filter((leave) => {
           const leaveStatus = normalizeStatus(leave?.status);
-          if (isRejectedStatus(leaveStatus)) return false;
-
           return (
-          normalizeLeaveType(leave?.leave_type) === normalizedType &&
-          isApprovedStatus(leaveStatus) &&
-          new Date(leave?.start_date).getFullYear() === currentYear
+            normalizeLeaveType(leave?.leave_type) === normalizedType &&
+            isApprovedStatus(leaveStatus) &&
+            new Date(leave?.start_date).getFullYear() === currentYear
           );
         });
-        
-        const totalUsed = usedLeaves.reduce((sum, leave) => sum + getLeaveDurationDays(leave), 0);
+
+        const activeAppliedLeavesForType = history.filter((leave) => (
+          normalizeLeaveType(leave?.leave_type) === normalizedType &&
+          isActiveAppliedStatus(leave?.status) &&
+          new Date(leave?.start_date).getFullYear() === currentYear
+        ));
+
+        const totalApproved = approvedLeavesForType.reduce((sum, leave) => sum + getLeaveDurationDays(leave), 0);
+        const totalAllocated = activeAppliedLeavesForType.reduce((sum, leave) => sum + getLeaveDurationDays(leave), 0);
+        const totalReserved = Math.max(0, totalAllocated - totalApproved);
 
         if (isPermissionType(type)) {
-          const monthlyApprovedLeaves = usedLeaves.filter((leave) => {
+          const monthlyApprovedLeaves = approvedLeavesForType.filter((leave) => {
+            const leaveDate = new Date(leave?.start_date);
+            return leaveDate.getMonth() + 1 === currentMonth;
+          });
+          const monthlyActiveLeaves = activeAppliedLeavesForType.filter((leave) => {
             const leaveDate = new Date(leave?.start_date);
             return leaveDate.getMonth() + 1 === currentMonth;
           });
           const monthlyTakenHours = monthlyApprovedLeaves.reduce((sum, leave) => sum + extractPermissionHours(leave), 0);
+          const monthlyAllocatedHours = monthlyActiveLeaves.reduce((sum, leave) => sum + extractPermissionHours(leave), 0);
           const monthlyAllowedHours = totalAllowed;
 
           calculatedBalance[type] = {
-            remaining: Math.max(0, monthlyAllowedHours - monthlyTakenHours),
+            remaining: Math.max(0, monthlyAllowedHours - monthlyAllocatedHours),
             taken: monthlyTakenHours,
             unit: 'hours',
-            monthlyTakenHours
+            monthlyTakenHours,
+            reserved: Math.max(0, monthlyAllocatedHours - monthlyTakenHours)
           };
           return;
         }
 
         if (isPlOrEarnedLeaveType(type)) {
-          const usedInCurrentMonth = usedLeaves.some((leave) => {
+          const usedInCurrentMonth = activeAppliedLeavesForType.some((leave) => {
             const leaveDate = new Date(leave?.start_date);
             return leaveDate.getMonth() + 1 === currentMonth;
           });
 
           calculatedBalance[type] = {
             remaining: usedInCurrentMonth ? 0 : 1,
-            taken: usedInCurrentMonth ? 1 : 0,
+            taken: totalApproved,
+            reserved: usedInCurrentMonth ? Math.max(0, 1 - totalApproved) : totalReserved,
             unit: 'days',
             monthlyRule: true
           };
@@ -519,7 +601,13 @@ export default function LeaveManagement() {
         if (isPaidLeaveType(type)) {
           const annualPaidLeave = totalAllowed > 0 ? totalAllowed : 12;
           const accruedTillCurrentMonth = Math.min(annualPaidLeave, currentMonth);
-          const usedTillCurrentMonth = usedLeaves
+          const approvedTillCurrentMonth = approvedLeavesForType
+            .filter((leave) => {
+              const leaveDate = new Date(leave?.start_date);
+              return leaveDate.getMonth() + 1 <= currentMonth;
+            })
+            .reduce((sum, leave) => sum + getLeaveDurationDays(leave), 0);
+          const allocatedTillCurrentMonth = activeAppliedLeavesForType
             .filter((leave) => {
               const leaveDate = new Date(leave?.start_date);
               return leaveDate.getMonth() + 1 <= currentMonth;
@@ -527,8 +615,9 @@ export default function LeaveManagement() {
             .reduce((sum, leave) => sum + getLeaveDurationDays(leave), 0);
 
           calculatedBalance[type] = {
-            remaining: Math.max(0, accruedTillCurrentMonth - usedTillCurrentMonth),
-            taken: usedTillCurrentMonth,
+            remaining: Math.max(0, accruedTillCurrentMonth - allocatedTillCurrentMonth),
+            taken: approvedTillCurrentMonth,
+            reserved: Math.max(0, allocatedTillCurrentMonth - approvedTillCurrentMonth),
             unit: 'days'
           };
           return;
@@ -537,7 +626,8 @@ export default function LeaveManagement() {
         if (isUnpaidLeaveType(type)) {
           calculatedBalance[type] = {
             remaining: null,
-            taken: totalUsed,
+            taken: totalApproved,
+            reserved: totalReserved,
             unit: 'days',
             isAsRequired: true
           };
@@ -545,8 +635,9 @@ export default function LeaveManagement() {
         }
 
         calculatedBalance[type] = {
-          remaining: Math.max(0, totalAllowed - totalUsed),
-          taken: totalUsed,
+          remaining: Math.max(0, totalAllowed - totalAllocated),
+          taken: totalApproved,
+          reserved: totalReserved,
           unit: 'days'
         };
       });
@@ -971,6 +1062,12 @@ export default function LeaveManagement() {
               label: 'Rejected',
               activeClass: 'bg-red-500 text-white',
               inactiveClass: 'bg-white text-gray-800 hover:bg-red-200'
+            },
+            {
+              key: 'cancelled',
+              label: 'Cancelled',
+              activeClass: 'bg-gray-500 text-white',
+              inactiveClass: 'bg-white text-gray-800 hover:bg-gray-200'
             }
           ].map((tab) => (
             <button
@@ -999,6 +1096,7 @@ export default function LeaveManagement() {
               const isMonthlyRule = Boolean(metrics.monthlyRule);
               const remaining = Number.isFinite(metrics.remaining) ? metrics.remaining : totalAllowed;
               const taken = Number.isFinite(metrics.taken) ? metrics.taken : Math.max(0, (totalAllowed || 0) - (remaining || 0));
+              const reserved = Number.isFinite(metrics.reserved) ? metrics.reserved : 0;
               const monthlyTakenHours = Number.isFinite(metrics.monthlyTakenHours) ? metrics.monthlyTakenHours : 0;
 
               return (
@@ -1040,6 +1138,9 @@ export default function LeaveManagement() {
                 )}
                 {isPermissionType(type) && (
                   <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">Total hours taken this month: {monthlyTakenHours}</p>
+                )}
+                {reserved > 0 && (
+                  <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">Reserved in pending requests: {formatLeaveValue(reserved)} {unit}</p>
                 )}
                 <p className="text-xs text-[#181c52] dark:text-[#181c52] mt-2 font-medium">Click to view policy →</p>
               </div>
@@ -1139,7 +1240,14 @@ export default function LeaveManagement() {
       {activeTab !== 'leave' && (
         <div className="bg-white dark:bg-gray-800 shadow rounded-lg p-6">
           {(() => {
-            const currentData = activeTab === 'requested' ? requestedLeaves : activeTab === 'approved' ? approvedLeaves : rejectedLeaves;
+            const currentData =
+              activeTab === 'requested'
+                ? requestedLeaves
+                : activeTab === 'approved'
+                  ? approvedLeaves
+                  : activeTab === 'cancelled'
+                    ? cancelledLeaves
+                    : rejectedLeaves;
             return currentData.length === 0 ? (
               <div className="text-center py-10 text-gray-500 dark:text-gray-400">
                 No {activeTab} leave records found.
@@ -1160,11 +1268,16 @@ export default function LeaveManagement() {
                           ? 'bg-green-100 text-green-800'
                           : ['PENDING', 'REQUESTED'].includes(normalizeStatus(leave.status))
                           ? 'bg-yellow-100 text-yellow-800'
+                        : isCanceledStatus(leave.status)
+                          ? 'bg-gray-200 text-gray-700'
                           : 'bg-red-100 text-red-800'
                       }`}>
                         {leave.status}
                       </span>
                     </div>
+                    <p className="text-sm text-gray-600 dark:text-gray-300">
+                      Applied On: {getAppliedOnDate(leave) ? new Date(getAppliedOnDate(leave)).toLocaleDateString() : 'N/A'}
+                    </p>
                     <p className="text-sm text-gray-600 dark:text-gray-300">From: {new Date(leave.start_date).toLocaleDateString()}</p>
                     <p className="text-sm text-gray-600 dark:text-gray-300">To: {new Date(leave.end_date).toLocaleDateString()}</p>
                     <p className="text-sm text-gray-600 dark:text-gray-300">

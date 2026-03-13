@@ -2274,117 +2274,129 @@ const handleDeleteLeaveFile = async (fileId) => {
         {showConfiguredList && (
           (configuredLeaves && configuredLeaves.length > 0) ? (
             <div className="space-y-3">
-              {configuredLeaves.map((event) => (
-                <div
-                  key={event.event_id || event.id}
-                  className="flex items-center justify-between p-4 border border-gray-200 rounded-lg bg-gray-50"
-                >
-                  <div className="flex items-center space-x-3">
-                    <span
-                      className="w-4 h-4 rounded"
-                      style={{ backgroundColor: event.color || '#3B82F6' }}
-                    />
-                    <div>
-                      <div className="font-semibold text-gray-900">{event.title}</div>
-                      <div className="text-sm text-gray-500">
-                        {event.start_date ? new Date(event.start_date).toLocaleDateString('en-GB') : ''}
+              {configuredLeaves
+                .filter(event => {
+                  // Exclude weekends (Saturday=6, Sunday=0)
+                  if (!event.start_date) return true;
+                  const date = new Date(event.start_date);
+                  const day = date.getDay();
+                  return day !== 0 && day !== 6;
+                })
+                .map((event) => (
+                  <div
+                    key={event.event_id || event.id}
+                    className="flex items-center justify-between p-4 border border-gray-200 rounded-lg bg-gray-50"
+                  >
+                    <div className="flex items-center space-x-3">
+                      <span
+                        className="w-4 h-4 rounded"
+                        style={{ backgroundColor: event.color || '#3B82F6' }}
+                      />
+                      <div>
+                        <div className="font-semibold text-gray-900">{event.title}</div>
+                        <div className="text-sm text-gray-500">
+                          {event.start_date ? new Date(event.start_date).toLocaleDateString('en-GB') : ''}
+                        </div>
+                        {/* Show holiday type if present */}
+                        {event.holiday_type && (
+                          <div className="text-xs text-gray-400">Type: {event.holiday_type}</div>
+                        )}
                       </div>
                     </div>
-                  </div>
 
-                  <div className="flex gap-2">
-                    <button
-                      onClick={() => {
-                        setEditingLeave(event);
-                        setLeaveTitle(event.title);
-                        setLeaveDate(event.start_date ? new Date(event.start_date) : new Date());
-                        setLeaveColor(event.color || '');
-                        const eventHolidayType =
-                          event.holiday_type ||
-                          event?.recurring_pattern?.holiday_type ||
-                          holidayTypes?.[0]?.name ||
-                          '';
-                        setLeaveHolidayType(eventHolidayType);
-                        setShowLeaveModal(true);
-                      }}
-                      className="px-3 py-1 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm"
-                    >
-                      Edit
-                    </button>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => {
+                          setEditingLeave(event);
+                          setLeaveTitle(event.title);
+                          setLeaveDate(event.start_date ? new Date(event.start_date) : new Date());
+                          setLeaveColor(event.color || '');
+                          const eventHolidayType =
+                            event.holiday_type ||
+                            event?.recurring_pattern?.holiday_type ||
+                            holidayTypes?.[0]?.name ||
+                            '';
+                          setLeaveHolidayType(eventHolidayType);
+                          setShowLeaveModal(true);
+                        }}
+                        className="px-3 py-1 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm"
+                      >
+                        Edit
+                      </button>
 
-                    <button
-                      onClick={async () => {
-                        if (!window.confirm('Delete this leave?')) return;
+                      <button
+                        onClick={async () => {
+                          if (!window.confirm('Delete this leave?')) return;
 
-                        try {
-                          const id = event.event_id || event.id;
-                          const isLocalOnlyEvent = String(id).startsWith('manual-');
-
-                          if (isLocalOnlyEvent) {
-                            removeClientCreatedEvent(id);
-                            setConfiguredLeaves(prev => prev.filter(e => String(e.event_id || e.id) !== String(id)));
-                            alert('Leave removed successfully!');
-                            return;
-                          }
-
-                          console.debug('[Settings] deleting event id=', id, 'event=', event);
-                          const res = await calendarAPI.deleteEvent(id);
-                          console.debug('[Settings] delete response=', res);
-
-                          // Optimistically remove from UI
-                          setConfiguredLeaves(prev => prev.filter(e => (e.event_id || e.id) !== id));
-
-                          // Broadcast deletion so other clients refresh
                           try {
-                            if (sendRealTimeMessage) {
-                              sendRealTimeMessage('calendar_update', { action: 'deleted', event_id: id });
-                            }
-                            window.dispatchEvent(new CustomEvent('settings-update', { detail: { type: 'calendar_update', action: 'deleted', event_id: id } }));
-                          } catch (e) {
-                            console.warn('Failed to broadcast calendar deletion', e);
-                          }
+                            const id = event.event_id || event.id;
+                            const isLocalOnlyEvent = String(id).startsWith('manual-');
 
-                          // Try to refetch to ensure consistency
-                          try { await fetchConfiguredLeaves(); } catch (e) { console.warn('Refetch after delete failed', e); }
-                        } catch (err) {
-                          // Log full error details for debugging
-                          console.error('Delete leave failed', err);
-                          const status = err?.response?.status;
-                          const data = err?.response?.data;
-
-                          // If it's a server error, show a friendly message and attempt client-side fallback
-                          if (status === 500) {
-                            console.error('Server error deleting calendar event:', data);
-                            alert('Failed to delete calendar event due to a server error. Using client-side fallback to hide it locally. Please contact your administrator to fix the server issue.');
-
-                            // client-side fallback: persist deletion id so employee Calendar hides it
-                            try {
-                              addClientDeletedId(id);
-                              setConfiguredLeaves(prev => prev.filter(e => (e.event_id || e.id) !== id));
-                              // broadcast local event so Calendar.jsx refreshes
-                              window.dispatchEvent(new CustomEvent('settings-update', { detail: { type: 'calendar_update', action: 'deleted', event_id: id } }));
-                            } catch (e) {
-                              console.warn('Client-side fallback failed', e);
-                            }
-                          } else {
-                            if (status === 404) {
-                              addClientDeletedId(id);
+                            if (isLocalOnlyEvent) {
+                              removeClientCreatedEvent(id);
                               setConfiguredLeaves(prev => prev.filter(e => String(e.event_id || e.id) !== String(id)));
-                              alert('Calendar delete endpoint is unavailable (404). The leave has been hidden locally.');
+                              alert('Leave removed successfully!');
                               return;
                             }
-                            const msg = (data && (data.detail || data.message)) || err?.message || 'Failed to delete leave';
-                            alert(msg);
+
+                            console.debug('[Settings] deleting event id=', id, 'event=', event);
+                            const res = await calendarAPI.deleteEvent(id);
+                            console.debug('[Settings] delete response=', res);
+
+                            // Optimistically remove from UI
+                            setConfiguredLeaves(prev => prev.filter(e => (e.event_id || e.id) !== id));
+
+                            // Broadcast deletion so other clients refresh
+                            try {
+                              if (sendRealTimeMessage) {
+                                sendRealTimeMessage('calendar_update', { action: 'deleted', event_id: id });
+                              }
+                              window.dispatchEvent(new CustomEvent('settings-update', { detail: { type: 'calendar_update', action: 'deleted', event_id: id } }));
+                            } catch (e) {
+                              console.warn('Failed to broadcast calendar deletion', e);
+                            }
+
+                            // Try to refetch to ensure consistency
+                            try { await fetchConfiguredLeaves(); } catch (e) { console.warn('Refetch after delete failed', e); }
+                          } catch (err) {
+                            // Log full error details for debugging
+                            console.error('Delete leave failed', err);
+                            const status = err?.response?.status;
+                            const data = err?.response?.data;
+
+                            // If it's a server error, show a friendly message and attempt client-side fallback
+                            if (status === 500) {
+                              console.error('Server error deleting calendar event:', data);
+                              alert('Failed to delete calendar event due to a server error. Using client-side fallback to hide it locally. Please contact your administrator to fix the server issue.');
+
+                              // client-side fallback: persist deletion id so employee Calendar hides it
+                              try {
+                                addClientDeletedId(id);
+                                setConfiguredLeaves(prev => prev.filter(e => (e.event_id || e.id) !== id));
+                                // broadcast local event so Calendar.jsx refreshes
+                                window.dispatchEvent(new CustomEvent('settings-update', { detail: { type: 'calendar_update', action: 'deleted', event_id: id } }));
+                              } catch (e) {
+                                console.warn('Client-side fallback failed', e);
+                              }
+                            } else {
+                              if (status === 404) {
+                                addClientDeletedId(id);
+                                setConfiguredLeaves(prev => prev.filter(e => String(e.event_id || e.id) !== String(id)));
+                                alert('Calendar delete endpoint is unavailable (404). The leave has been hidden locally.');
+                                return;
+                              }
+                              const msg = (data && (data.detail || data.message)) || err?.message || 'Failed to delete leave';
+                              alert(msg);
+                            }
                           }
-                        }
-                      }}
-                      className="px-3 py-1 bg-red-600 text-white rounded-lg hover:bg-red-700 text-sm"
-                    >
-                      Delete
-                    </button>
+                        }}
+                        className="px-3 py-1 bg-red-600 text-white rounded-lg hover:bg-red-700 text-sm"
+                      >
+                        Delete
+                      </button>
+                    </div>
                   </div>
-                </div>
-              ))}
+                ))}
             </div>
           ) : (
             <div className="text-sm text-gray-500">No configured leaves</div>

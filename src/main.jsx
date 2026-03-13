@@ -103,6 +103,7 @@ import Profile from './pages/candidate/Profile';
 import TakeTest from './pages/candidate/TakeTest';
 import CandidateOnboarding from './pages/candidate/Onboarding';
 import PreEmploymentForm from './pages/candidate/PreEmploymentForm';
+import RequirePreEmploymentComplete from './RequirePreEmploymentComplete';
 
 // Student imports
 import StudentLayout from './layouts/StudentLayout';
@@ -127,7 +128,6 @@ import ManagerExpenses from './pages/manager/Expenses';
 import ManagerReimbursements from './pages/manager/Reimbursements';
 import ManagerInvestmentDeclarations from './pages/manager/InvestmentDeclarations';
  
-
 // Auth guard for protected routes
 function RequireAuth({ children, allowedRoles = [] }) {
   const { user, mustResetPassword, refreshUser } = useAuth();
@@ -693,7 +693,10 @@ function App() {
               </RequireAuth>
             }
           >
-            <Route index element={<OnboardingStatus />} />
+            {/* Pre-employment form must be filled before onboarding */}
+            <Route path="pre-employment-form" element={<PreEmploymentForm />} />
+            {/* Only show onboarding status if pre-employment is complete */}
+            <Route index element={<RequirePreEmploymentComplete><OnboardingStatus /></RequirePreEmploymentComplete>} />
           </Route>
 
           {/* Candidate routes */}
@@ -706,7 +709,7 @@ function App() {
             }
           >
             <Route index element={<CandidateDashboard />} />
-            <Route path="onboarding" element={<CandidateOnboarding />} />
+            <Route path="onboarding" element={<RequirePreEmploymentComplete><CandidateOnboarding /></RequirePreEmploymentComplete>} />
             <Route path="careers" element={<Careers />} />
             <Route path="applications" element={<MyApplications />} />
             <Route path="profile" element={<Profile />} />

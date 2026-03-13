@@ -228,6 +228,7 @@ const InlineLeaveForm = ({ onSubmit, onCancel, leaveConfig = null }) => {
   }, [leaveTypes]);
 
   const PERMISSION_KEYWORDS = ['permission', 'permission required', 'permission_leave', 'permission-required'];
+  const BREVEAMENT_KEYWORDS = ['breveament', 'bereavement'];
 
   const selectedLeaveTypeObj = leaveTypes.find((t) => t.value === formData.leave_type) || {};
   const selectedLeaveTypeName = normalizeTypeName(selectedLeaveTypeObj.value || selectedLeaveTypeObj.label || formData.leave_type);
@@ -238,6 +239,7 @@ const InlineLeaveForm = ({ onSubmit, onCancel, leaveConfig = null }) => {
   const shouldRestrictToConfiguredSlots = selectedTypeConfiguredSlots.length > 0;
 
   const isPermissionLeave = PERMISSION_KEYWORDS.some((k) => selectedLeaveTypeName.includes(k));
+  const isBreveamentLeave = BREVEAMENT_KEYWORDS.some((k) => selectedLeaveTypeName.includes(k));
   const isSickLeave = normalizeTypeName(formData.leave_type).includes('sick');
   const isWFHLeave = normalizeTypeName(formData.leave_type).includes('work from home') || normalizeTypeName(formData.leave_type).includes('wfh');
   const isMaternityLeave = normalizeTypeName(formData.leave_type).includes('maternity');
@@ -344,7 +346,8 @@ const InlineLeaveForm = ({ onSubmit, onCancel, leaveConfig = null }) => {
       const selectingPermission = currentLeaveType.includes('permission');
       const selectingSick = currentLeaveType.includes('sick');
 
-      if (!selectingPermission && !selectingSick && daysDiff > 0 && daysDiff < MIN_ADVANCE_DAYS) {
+      const selectingBereaveament = currentLeaveType.includes('bereaveament') || currentLeaveType.includes('bereavement');
+      if (!selectingPermission && !selectingSick && !selectingBereaveament && daysDiff > 0 && daysDiff < MIN_ADVANCE_DAYS) {
         // Block selection: auto-adjust to earliest allowed future date and show error
         const earliest = new Date(today);
         earliest.setDate(today.getDate() + MIN_ADVANCE_DAYS);
@@ -355,7 +358,7 @@ const InlineLeaveForm = ({ onSubmit, onCancel, leaveConfig = null }) => {
           ...(prev.leave_duration && ['first_half', 'second_half'].includes(String(prev.leave_duration).toLowerCase()) ? { end_date: iso } : {}),
           ...(String(prev.leave_type || '').trim().toLowerCase().includes('permission') ? { end_date: iso, leave_duration: 'full_day' } : {})
         }));
-        setErrors(prev => ({ ...prev, start_date: `Except for Sick leave and Permission, all other leaves should be applied for at least ${MIN_ADVANCE_DAYS} days in advance` }));
+        setErrors(prev => ({ ...prev, start_date: `Except for Sick leave ,Permission and Bereavement Leave, all other leaves should be applied for at least ${MIN_ADVANCE_DAYS} days in advance` }));
         return;
       }
     }
@@ -447,7 +450,7 @@ const InlineLeaveForm = ({ onSubmit, onCancel, leaveConfig = null }) => {
       }
     }
     
-    if (!isPermissionLeave && !isSessionalLeave && !isMaternityLeave && !formData.end_date) {
+    if (!isPermissionLeave && !isBreveamentLeave && !isSessionalLeave && !isMaternityLeave && !formData.end_date) {
       newErrors.end_date = 'Please select an end date';
     }
 
@@ -510,7 +513,7 @@ const InlineLeaveForm = ({ onSubmit, onCancel, leaveConfig = null }) => {
       }
 
       // Require minimum advance for non-exempt leave types (block next MIN_ADVANCE_DAYS for future dates)
-      if (!shouldRestrictToConfiguredSlots && !isPermissionLeave && !isSickLeave && !(isYesterdayBackfill || isWithinBackfillWindow)) {
+      if (!shouldRestrictToConfiguredSlots && !isPermissionLeave && !isSickLeave && !isBreveamentLeave && !(isYesterdayBackfill || isWithinBackfillWindow)) {
         const daysDiff = Math.ceil((startDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
         if (daysDiff < MIN_ADVANCE_DAYS) {
           newErrors.start_date = `This leave type must be applied at least ${MIN_ADVANCE_DAYS} days in advance`;
@@ -600,10 +603,19 @@ const InlineLeaveForm = ({ onSubmit, onCancel, leaveConfig = null }) => {
             }
           }, 0);
 
-          // compute requested days
+          // compute requested days, excluding weekends
           const sReq = new Date(leaveData.start_date);
           const eReq = new Date(leaveData.end_date);
-          const requestedDays = Math.max(1, Math.round((eReq - sReq) / (1000 * 60 * 60 * 24)) + 1);
+          let requestedDays = 0;
+          let d = new Date(sReq);
+          while (d <= eReq) {
+            const day = d.getDay();
+            if (day !== 0 && day !== 6) { // 0 = Sunday, 6 = Saturday
+              requestedDays++;
+            }
+            d.setDate(d.getDate() + 1);
+          }
+          requestedDays = Math.max(1, requestedDays);
 
           const MAX_WFH_PER_MONTH = 2;
           if (usedWFHDaysThisMonth + requestedDays > MAX_WFH_PER_MONTH) {
@@ -684,10 +696,11 @@ const InlineLeaveForm = ({ onSubmit, onCancel, leaveConfig = null }) => {
     }
   };
 
+  // Allow selecting any of the last BACKFILL_WINDOW_DAYS (including today)
   const getMinDate = () => {
-    const yesterday = new Date();
-    yesterday.setDate(yesterday.getDate() - 1);
-    return yesterday.toISOString().split('T')[0];
+    const minDate = new Date();
+    minDate.setDate(minDate.getDate() - BACKFILL_WINDOW_DAYS);
+    return minDate.toISOString().split('T')[0];
   };
 
   return (

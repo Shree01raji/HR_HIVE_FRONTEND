@@ -293,7 +293,7 @@ export default function Timesheet() {
   return (
     <div className="h-screen flex flex-col p-4">
       {/* Activity Tracker Status */}
-      <ActivityTrackerInstaller />
+      {/* <ActivityTrackerInstaller /> */}
       
       {/* Header */}
       <div className="flex justify-between items-center mb-4">

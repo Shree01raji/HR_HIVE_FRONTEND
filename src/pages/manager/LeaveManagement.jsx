@@ -106,8 +106,14 @@ export default function LeaveManagement() {
     }
   };
 
+  const isCancelledStatus = (value) => {
+    const normalized = String(value || '').toLowerCase();
+    return normalized === 'cancelled' || normalized === 'canceled';
+  };
+
   const filteredLeaves = leaves.filter((leave) => {
     if (filter === 'all') return true;
+    if (filter === 'cancelled') return isCancelledStatus(leave?.status);
     return String(leave.status || '').toLowerCase() === filter.toLowerCase();
   });
 
@@ -134,6 +140,9 @@ export default function LeaveManagement() {
         return 'bg-green-100 text-green-800';
       case 'rejected':
         return 'bg-red-100 text-red-800';
+      case 'cancelled':
+      case 'canceled':
+        return 'bg-gray-200 text-gray-700';
       default:
         return 'bg-gray-100 text-gray-800';
     }
@@ -146,6 +155,9 @@ export default function LeaveManagement() {
       case 'approved':
         return <FiCheck className="w-4 h-4" />;
       case 'rejected':
+        return <FiX className="w-4 h-4" />;
+      case 'cancelled':
+      case 'canceled':
         return <FiX className="w-4 h-4" />;
       default:
         return <FiClock className="w-4 h-4" />;
@@ -195,7 +207,8 @@ export default function LeaveManagement() {
             { key: 'all', label: 'All', count: leaves.length },
             { key: 'pending', label: 'Pending', count: leaves.filter((l) => String(l.status || '').toLowerCase() === 'pending').length },
             { key: 'approved', label: 'Approved', count: leaves.filter((l) => String(l.status || '').toLowerCase() === 'approved').length },
-            { key: 'rejected', label: 'Rejected', count: leaves.filter((l) => String(l.status || '').toLowerCase() === 'rejected').length }
+            { key: 'rejected', label: 'Rejected', count: leaves.filter((l) => String(l.status || '').toLowerCase() === 'rejected').length },
+            { key: 'cancelled', label: 'Employee Cancelled', count: leaves.filter((l) => isCancelledStatus(l.status)).length }
           ].map((tab) => (
             <button
               key={tab.key}

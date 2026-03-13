@@ -225,6 +225,14 @@ export default function Employees() {
         skip_company_email_generation: true,
         skip_document_onboarding: true,
       };
+      // Add manager_id if provided
+      if (addEmployeeForm.manager_id && addEmployeeForm.manager_id.trim() !== '') {
+        payload.manager_id = addEmployeeForm.manager_id.trim();
+      }
+      // Add employee_id if provided (manual entry)
+      if (addEmployeeForm.employee_id && addEmployeeForm.employee_id.trim() !== '') {
+        payload.employee_id = addEmployeeForm.employee_id.trim();
+      }
 
       const created = await employeeAPI.create(payload);
       setEmployees((prev) => {
@@ -561,6 +569,39 @@ export default function Employees() {
 
             <form onSubmit={handleAddEmployee} className="p-5 space-y-4">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {/* Manager Assignment Dropdown */}
+                <select
+                  value={addEmployeeForm.manager_id || ''}
+                  onChange={(e) => updateAddEmployeeField('manager_id', e.target.value)}
+                  className="px-3 py-2 border border-gray-300 rounded-lg text-sm"
+                >
+                  <option value="">Assign Manager </option>
+                  {safeEmployees
+                    .filter(emp => emp.role === 'MANAGER')
+                    .map(emp => (
+                      <option key={emp.employee_id} value={emp.employee_id}>
+                        {emp.first_name} {emp.last_name} (EMP{String(emp.employee_id).padStart(3, '0')})
+                      </option>
+                    ))}
+                </select>
+                                {/* Employee ID Field (manual/auto) */}
+                                <div className="flex gap-2 items-center">
+                                  <input
+                                    type="text"
+                                    placeholder="Employee ID (leave blank for auto)"
+                                    value={addEmployeeForm.employee_id || ''}
+                                    onChange={(e) => updateAddEmployeeField('employee_id', e.target.value)}
+                                    className="px-3 py-2 border border-gray-300 rounded-lg text-sm flex-1"
+                                  />
+                                  <button
+                                    type="button"
+                                    className="px-2 py-1 bg-slate-200 rounded text-xs text-slate-700 hover:bg-slate-300"
+                                    onClick={() => updateAddEmployeeField('employee_id', '')}
+                                    title="Clear for auto-generation"
+                                  >
+                                    Auto
+                                  </button>
+                                </div>
                 <input
                   type="text"
                   placeholder="First Name"

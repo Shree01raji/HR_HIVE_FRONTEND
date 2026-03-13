@@ -15,7 +15,7 @@ export default function OnboardingLayout() {
               Upload your documents and complete the pre-join checklist.
             </p>
           </div>
-          <ThemeToggle />
+          {/* <ThemeToggle /> */}
         </div>
       </header>
       <main className="mx-auto max-w-6xl px-4 py-8 sm:px-6 lg:px-8">

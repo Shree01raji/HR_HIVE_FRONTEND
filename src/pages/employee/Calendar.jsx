@@ -1,3 +1,17 @@
+// Helper to get all configured weekend holiday type names (case-insensitive)
+const getConfiguredWeekendTypes = (configuredHolidayTypes) => {
+  return new Set(
+    (configuredHolidayTypes || [])
+      .map(item => String(item?.name || '').trim().toLowerCase())
+      .filter(name => name === 'weekend' || name === 'saturday' || name === 'sunday')
+  );
+};
+
+// Helper to check if a holiday type is a weekend holiday (by name or config)
+const isWeekendHolidayType = (type, weekendTypesSet) => {
+  const t = String(type || '').toLowerCase();
+  return weekendTypesSet.has(t);
+};
 import React, { useState, useEffect, useMemo } from "react";
 import { FiChevronLeft, FiChevronRight } from "react-icons/fi";
 import api, { calendarAPI } from '../../services/api';
@@ -175,57 +189,72 @@ const Calendar = () => {
   `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
 
   const getMonthLeaves = () => {
-  if (!Array.isArray(leaves)) return [];
+    if (!Array.isArray(leaves)) return [];
 
-  const year = currentDate.getFullYear();
-  const month = currentDate.getMonth();
+    const year = currentDate.getFullYear();
+    const month = currentDate.getMonth();
+    const weekendTypesSet = getConfiguredWeekendTypes(configuredHolidayTypes);
 
-  // We will expand multi-day leaves into individual day entries within the month
-  const firstOfMonth = new Date(year, month, 1);
-  const lastOfMonth = new Date(year, month + 1, 0);
+    // We will expand multi-day leaves into individual day entries within the month
+    const firstOfMonth = new Date(year, month, 1);
+    const lastOfMonth = new Date(year, month + 1, 0);
 
-  const entries = [];
+    const entries = [];
 
-  for (const l of leaves) {
-    const rawStart = l._start || l.start_date || l.start || l.date;
-    if (!rawStart) continue;
+    for (const l of leaves) {
+      const rawStart = l._start || l.start_date || l.start || l.date;
+      if (!rawStart) continue;
 
-    const startStr = String(rawStart).split('T')[0];
-    const [sy, sm, sd] = startStr.split('-').map(x => parseInt(x, 10));
-    const startDate = new Date(sy, sm - 1, sd);
+      const startStr = String(rawStart).split('T')[0];
+      const [sy, sm, sd] = startStr.split('-').map(x => parseInt(x, 10));
+      const startDate = new Date(sy, sm - 1, sd);
 
-    let endDate = startDate;
-    const rawEnd = l._end || l.end_date || l.end;
-    if (rawEnd) {
-      const endStr = String(rawEnd).split('T')[0];
-      const [ey, em, ed] = endStr.split('-').map(x => parseInt(x, 10));
-      endDate = new Date(ey, em - 1, ed);
+      let endDate = startDate;
+      const rawEnd = l._end || l.end_date || l.end;
+      if (rawEnd) {
+        const endStr = String(rawEnd).split('T')[0];
+        const [ey, em, ed] = endStr.split('-').map(x => parseInt(x, 10));
+        endDate = new Date(ey, em - 1, ed);
+      }
+
+      // clamp range to month
+      const rangeStart = startDate > firstOfMonth ? startDate : firstOfMonth;
+      const rangeEnd = endDate < lastOfMonth ? endDate : lastOfMonth;
+
+      for (let d = new Date(rangeStart); d <= rangeEnd; d.setDate(d.getDate() + 1)) {
+        // copy date value (d will be mutated)
+        const copied = new Date(d.getTime());
+        // Check all possible type fields
+        const leaveType = String(
+          l.holiday_type ||
+          l.holidayType ||
+          (l.recurring_pattern && l.recurring_pattern.holiday_type) ||
+          l.leave_type ||
+          l.type ||
+          ''
+        ).toLowerCase();
+        const isWeekend = copied.getDay() === 0 || copied.getDay() === 6;
+        // Exclude if this is a weekend and the type is a configured weekend type
+        if (isWeekend && isWeekendHolidayType(leaveType, weekendTypesSet)) continue;
+        // Exclude if the type is a configured weekend type (regardless of date)
+        if (isWeekendHolidayType(leaveType, weekendTypesSet)) continue;
+        entries.push({ ...l, parsedDate: copied });
+      }
     }
 
-    // clamp range to month
-    const rangeStart = startDate > firstOfMonth ? startDate : firstOfMonth;
-    const rangeEnd = endDate < lastOfMonth ? endDate : lastOfMonth;
+    // sort and dedupe by date
+    const uniq = [];
+    const seen = new Set();
+    entries.sort((a, b) => a.parsedDate - b.parsedDate).forEach(e => {
+      const key = formatDate(e.parsedDate);
+      if (!seen.has(key)) {
+        seen.add(key);
+        uniq.push(e);
+      }
+    });
 
-    for (let d = new Date(rangeStart); d <= rangeEnd; d.setDate(d.getDate() + 1)) {
-      // copy date value (d will be mutated)
-      const copied = new Date(d.getTime());
-      entries.push({ ...l, parsedDate: copied });
-    }
-  }
-
-  // sort and dedupe by date
-  const uniq = [];
-  const seen = new Set();
-  entries.sort((a, b) => a.parsedDate - b.parsedDate).forEach(e => {
-    const key = formatDate(e.parsedDate);
-    if (!seen.has(key)) {
-      seen.add(key);
-      uniq.push(e);
-    }
-  });
-
-  return uniq;
-};
+    return uniq;
+  };
 
 
  const monthLeaves = getMonthLeaves();
@@ -237,9 +266,12 @@ const leaveMap = new Map(monthLeaves.map(l => [formatDate(l.parsedDate), l]));
 
 const holidayLegendItems = useMemo(() => {
   const map = new Map();
+  const weekendTypesSet = getConfiguredWeekendTypes(configuredHolidayTypes);
   (configuredHolidayTypes || []).forEach((item) => {
     const label = String(item?.name || '').trim();
     if (!label) return;
+    // Exclude weekend holiday types from legend
+    if (isWeekendHolidayType(label, weekendTypesSet)) return;
     map.set(label.toLowerCase(), {
       label,
       color: item?.color || '#d1d5db'
@@ -254,6 +286,7 @@ const holidayLegendItems = useMemo(() => {
       ''
     ).trim();
     if (!type) return;
+    if (isWeekendHolidayType(type, weekendTypesSet)) return;
     const key = type.toLowerCase();
     if (!map.has(key)) {
       map.set(key, {

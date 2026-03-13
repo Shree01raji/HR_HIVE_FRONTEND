@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { documentsAPI } from '../../services/api';
+import { documentsAPI , preEmploymentAPI} from '../../services/api';
 import {
   FiFileText,
   FiCheckCircle,
@@ -14,6 +14,7 @@ import {
   FiSearch,
   FiCalendar,
   FiUserPlus,
+  FiPlus,
 } from 'react-icons/fi';
 
 const statusMeta = {
@@ -50,6 +51,7 @@ export default function OnboardingAdmin() {
   const [overview, setOverview] = useState([]);
   const [pendingDocuments, setPendingDocuments] = useState([]);
   const [requiredDocuments, setRequiredDocuments] = useState([]);
+  const [preEmploymentFieldConfigs, setPreEmploymentFieldConfigs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [searchTerm, setSearchTerm] = useState('');
@@ -65,6 +67,22 @@ export default function OnboardingAdmin() {
     description: '',
     is_mandatory: true,
   });
+  const [showPreEmploymentConfigModal, setShowPreEmploymentConfigModal] = useState(false);
+  const [editingPreEmploymentConfig, setEditingPreEmploymentConfig] = useState(null);
+  const [savingPreEmploymentConfig, setSavingPreEmploymentConfig] = useState(false);
+  const [preEmploymentConfigForm, setPreEmploymentConfigForm] = useState({
+    field_key: '',
+    label: '',
+    field_type: 'text',
+    section: 'Additional Information',
+    placeholder: '',
+    help_text: '',
+    is_required: false,
+    is_active: true,
+    sort_order: 0,
+    options_json: '[]',
+    validations_json: '{}',
+  });
   const [exemptModal, setExemptModal] = useState({ show: false, assignment: null, reason: '' });
   const [bulkDates, setBulkDates] = useState({});
 
@@ -76,6 +94,8 @@ export default function OnboardingAdmin() {
       fetchPendingDocuments();
     } else if (activeTab === 'templates') {
       fetchRequiredDocuments();
+    } else if (activeTab === 'form-config'){
+      fetchPreEmploymentFieldConfigs();
     }
   }, [activeTab]);
 
@@ -113,6 +133,18 @@ export default function OnboardingAdmin() {
     } catch (err) {
       console.error('Failed to fetch required documents:', err);
       setError('Failed to load required document templates.');
+    } finally {
+      setLoading(false);
+    }
+  };
+  const fetchPreEmploymentFieldConfigs = async () => {
+    try {
+      setLoading(true);
+      const data = await preEmploymentAPI.getFieldConfigs(true);
+      setPreEmploymentFieldConfigs(data || []);
+    } catch (err) {
+      console.error('Failed to fetch pre-employment field configs:', err);
+      setError('Failed to load pre-employment field configurations.');
     } finally {
       setLoading(false);
     }
@@ -222,6 +254,103 @@ export default function OnboardingAdmin() {
       setError(err.response?.data?.detail || 'Failed to save required document');
     }
   };
+
+  const resetPreEmploymentConfigModal = () => {
+    setShowPreEmploymentConfigModal(false);
+    setEditingPreEmploymentConfig(null);
+    setPreEmploymentConfigForm({
+      field_key: '',
+      label: '',
+      field_type: 'text',
+      section: 'Additional Information',
+      placeholder: '',
+      help_text: '',
+      is_required: false,
+      is_active: true,
+      sort_order: 0,
+      options_json: '[]',
+      validations_json: '{}',
+    });
+  };
+ 
+  const openCreatePreEmploymentConfig = () => {
+    resetPreEmploymentConfigModal();
+    setShowPreEmploymentConfigModal(true);
+  };
+ 
+  const openEditPreEmploymentConfig = (config) => {
+    setEditingPreEmploymentConfig(config);
+    setPreEmploymentConfigForm({
+      field_key: config.field_key || '',
+      label: config.label || '',
+      field_type: config.field_type || 'text',
+      section: config.section || 'Additional Information',
+      placeholder: config.placeholder || '',
+      help_text: config.help_text || '',
+      is_required: Boolean(config.is_required),
+      is_active: Boolean(config.is_active),
+      sort_order: Number(config.sort_order || 0),
+      options_json: JSON.stringify(config.options || [], null, 2),
+      validations_json: JSON.stringify(config.validations || {}, null, 2),
+    });
+    setShowPreEmploymentConfigModal(true);
+  };
+ 
+  const handleSavePreEmploymentConfig = async (e) => {
+    e.preventDefault();
+    try {
+      setSavingPreEmploymentConfig(true);
+      setError(null);
+ 
+      let options = null;
+      let validations = null;
+      try {
+        options = preEmploymentConfigForm.options_json
+          ? JSON.parse(preEmploymentConfigForm.options_json)
+          : null;
+      } catch {
+        throw new Error('Options JSON is invalid.');
+      }
+ 
+      try {
+        validations = preEmploymentConfigForm.validations_json
+          ? JSON.parse(preEmploymentConfigForm.validations_json)
+          : null;
+      } catch {
+        throw new Error('Validations JSON is invalid.');
+      }
+ 
+      const payload = {
+        field_key: preEmploymentConfigForm.field_key.trim(),
+        label: preEmploymentConfigForm.label.trim(),
+        field_type: preEmploymentConfigForm.field_type,
+        section: preEmploymentConfigForm.section.trim() || null,
+        placeholder: preEmploymentConfigForm.placeholder.trim() || null,
+        help_text: preEmploymentConfigForm.help_text.trim() || null,
+        is_required: preEmploymentConfigForm.is_required,
+        is_active: preEmploymentConfigForm.is_active,
+        sort_order: Number(preEmploymentConfigForm.sort_order || 0),
+        options,
+        validations,
+      };
+ 
+      if (editingPreEmploymentConfig) {
+        const updatePayload = { ...payload };
+        delete updatePayload.field_key;
+        await preEmploymentAPI.updateFieldConfig(editingPreEmploymentConfig.field_id, updatePayload);
+      } else {
+        await preEmploymentAPI.createFieldConfig(payload);
+      }
+ 
+      resetPreEmploymentConfigModal();
+      await fetchPreEmploymentFieldConfigs();
+    } catch (err) {
+      setError(err.response?.data?.detail || err.message || 'Failed to save pre-employment field configuration.');
+    } finally {
+      setSavingPreEmploymentConfig(false);
+    }
+  };
+ 
 
   const handleAssignDueDate = async (assignmentId, dueDate) => {
     try {
@@ -728,6 +857,70 @@ export default function OnboardingAdmin() {
     </div>
   );
 
+   const renderPreEmploymentFormConfig = () => (
+    <div className="bg-white border rounded-xl shadow-sm p-4">
+      <div className="flex justify-between items-center mb-4">
+        <div>
+          <h3 className="text-lg font-semibold text-gray-900">Pre-employment Form Configuration</h3>
+          <p className="text-sm text-gray-600">
+            Define additional configurable fields shown before document upload.
+          </p>
+        </div>
+        <button
+          onClick={openCreatePreEmploymentConfig}
+          className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 flex items-center gap-2"
+        >
+          <FiPlus className="w-4 h-4" />
+          Add Field
+        </button>
+      </div>
+ 
+      {preEmploymentFieldConfigs.length === 0 ? (
+        <div className="text-center py-12 text-gray-500">
+          No configurable pre-employment fields defined yet.
+        </div>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="min-w-full divide-y divide-gray-200">
+            <thead className="bg-gray-50">
+              <tr>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase">Key</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase">Label</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase">Type</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase">Section</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase">Required</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase">Active</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase">Actions</th>
+              </tr>
+            </thead>
+            <tbody className="bg-white divide-y divide-gray-200">
+              {preEmploymentFieldConfigs.map((config) => (
+                <tr key={config.field_id} className="hover:bg-gray-50">
+                  <td className="px-4 py-4 text-sm font-mono text-gray-900">{config.field_key}</td>
+                  <td className="px-4 py-4 text-sm text-gray-900 font-medium">{config.label}</td>
+                  <td className="px-4 py-4 text-sm text-gray-600">{config.field_type}</td>
+                  <td className="px-4 py-4 text-sm text-gray-600">{config.section || 'Additional Information'}</td>
+                  <td className="px-4 py-4 text-sm text-gray-600">{config.is_required ? 'Yes' : 'No'}</td>
+                  <td className="px-4 py-4 text-sm text-gray-600">{config.is_active ? 'Yes' : 'No'}</td>
+                  <td className="px-4 py-4 whitespace-nowrap">
+                    <button
+                      onClick={() => openEditPreEmploymentConfig(config)}
+                      className="p-1.5 text-blue-600 hover:bg-blue-50 rounded"
+                      title="Edit"
+                    >
+                      <FiEdit className="w-4 h-4" />
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+ 
+
   if (loading) {
     return (
       <div className="h-screen flex items-center justify-center">
@@ -761,6 +954,7 @@ export default function OnboardingAdmin() {
               if (activeTab === 'overview') fetchOverview();
               if (activeTab === 'pending') fetchPendingDocuments();
               if (activeTab === 'templates') fetchRequiredDocuments();
+              if (activeTab === 'form-config') fetchPreEmploymentFieldConfigs();
             }}
             className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200"
           >
@@ -800,6 +994,16 @@ export default function OnboardingAdmin() {
         >
           Templates
         </button>
+        <button
+          onClick={() => setActiveTab('form-config')}
+          className={`px-4 py-2 font-medium text-sm transition-colors ${
+            activeTab === 'form-config'
+              ? 'text-blue-600 border-b-2 border-blue-600'
+              : 'text-gray-600 hover:text-gray-900'
+          }`}
+        >
+          Form Configuration
+        </button>
       </div>
       {error && (
         <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded mb-4">
@@ -811,6 +1015,7 @@ export default function OnboardingAdmin() {
         {activeTab === 'overview' && renderOverview()}
         {activeTab === 'pending' && renderPending()}
         {activeTab === 'templates' && renderTemplates()}
+        {activeTab === 'form-config' && renderPreEmploymentFormConfig()}
       </div>
 
       {viewingDocument && (
@@ -983,6 +1188,157 @@ export default function OnboardingAdmin() {
           </div>
         </div>
       )}
+
+      {showPreEmploymentConfigModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-lg p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto">
+            <div className="flex justify-between items-center mb-4">
+              <h2 className="text-lg font-semibold text-gray-900">
+                {editingPreEmploymentConfig ? 'Edit Pre-employment Field' : 'Add Pre-employment Field'}
+              </h2>
+              <button onClick={resetPreEmploymentConfigModal} className="text-gray-500 hover:text-gray-700">
+                <FiX className="w-5 h-5" />
+              </button>
+            </div>
+            <form onSubmit={handleSavePreEmploymentConfig} className="space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Field Key *</label>
+                  <input
+                    type="text"
+                    value={preEmploymentConfigForm.field_key}
+                    onChange={(e) => setPreEmploymentConfigForm({ ...preEmploymentConfigForm, field_key: e.target.value })}
+                    className="w-full border border-gray-300 rounded px-3 py-2"
+                    disabled={Boolean(editingPreEmploymentConfig)}
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Label *</label>
+                  <input
+                    type="text"
+                    value={preEmploymentConfigForm.label}
+                    onChange={(e) => setPreEmploymentConfigForm({ ...preEmploymentConfigForm, label: e.target.value })}
+                    className="w-full border border-gray-300 rounded px-3 py-2"
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Field Type</label>
+                  <select
+                    value={preEmploymentConfigForm.field_type}
+                    onChange={(e) => setPreEmploymentConfigForm({ ...preEmploymentConfigForm, field_type: e.target.value })}
+                    className="w-full border border-gray-300 rounded px-3 py-2"
+                  >
+                    <option value="text">text</option>
+                    <option value="textarea">textarea</option>
+                    <option value="number">number</option>
+                    <option value="date">date</option>
+                    <option value="select">select</option>
+                    <option value="checkbox">checkbox</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Section</label>
+                  <input
+                    type="text"
+                    value={preEmploymentConfigForm.section}
+                    onChange={(e) => setPreEmploymentConfigForm({ ...preEmploymentConfigForm, section: e.target.value })}
+                    className="w-full border border-gray-300 rounded px-3 py-2"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Sort Order</label>
+                  <input
+                    type="number"
+                    value={preEmploymentConfigForm.sort_order}
+                    onChange={(e) => setPreEmploymentConfigForm({ ...preEmploymentConfigForm, sort_order: e.target.value })}
+                    className="w-full border border-gray-300 rounded px-3 py-2"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Placeholder</label>
+                  <input
+                    type="text"
+                    value={preEmploymentConfigForm.placeholder}
+                    onChange={(e) => setPreEmploymentConfigForm({ ...preEmploymentConfigForm, placeholder: e.target.value })}
+                    className="w-full border border-gray-300 rounded px-3 py-2"
+                  />
+                </div>
+              </div>
+ 
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Help Text</label>
+                <textarea
+                  value={preEmploymentConfigForm.help_text}
+                  onChange={(e) => setPreEmploymentConfigForm({ ...preEmploymentConfigForm, help_text: e.target.value })}
+                  className="w-full border border-gray-300 rounded px-3 py-2"
+                  rows="2"
+                />
+              </div>
+ 
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Options JSON</label>
+                <textarea
+                  value={preEmploymentConfigForm.options_json}
+                  onChange={(e) => setPreEmploymentConfigForm({ ...preEmploymentConfigForm, options_json: e.target.value })}
+                  className="w-full border border-gray-300 rounded px-3 py-2 font-mono text-sm"
+                  rows="4"
+                  placeholder='[{"label":"Yes","value":"yes"}]'
+                />
+              </div>
+ 
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Validations JSON</label>
+                <textarea
+                  value={preEmploymentConfigForm.validations_json}
+                  onChange={(e) => setPreEmploymentConfigForm({ ...preEmploymentConfigForm, validations_json: e.target.value })}
+                  className="w-full border border-gray-300 rounded px-3 py-2 font-mono text-sm"
+                  rows="3"
+                  placeholder='{"maxLength":100}'
+                />
+              </div>
+ 
+              <div className="flex items-center gap-6">
+                <label className="flex items-center text-sm text-gray-700 gap-2">
+                  <input
+                    type="checkbox"
+                    checked={preEmploymentConfigForm.is_required}
+                    onChange={(e) => setPreEmploymentConfigForm({ ...preEmploymentConfigForm, is_required: e.target.checked })}
+                  />
+                  Required
+                </label>
+                <label className="flex items-center text-sm text-gray-700 gap-2">
+                  <input
+                    type="checkbox"
+                    checked={preEmploymentConfigForm.is_active}
+                    onChange={(e) => setPreEmploymentConfigForm({ ...preEmploymentConfigForm, is_active: e.target.checked })}
+                  />
+                  Active
+                </label>
+              </div>
+ 
+              <div className="flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={resetPreEmploymentConfigModal}
+                  className="px-4 py-2 text-gray-700 border border-gray-300 rounded hover:bg-gray-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={savingPreEmploymentConfig}
+                  className="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 disabled:opacity-50"
+                >
+                  {savingPreEmploymentConfig ? 'Saving...' : editingPreEmploymentConfig ? 'Update' : 'Create'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+ 
 
       {exemptModal.show && (
         <div className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50 p-4">

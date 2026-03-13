@@ -537,13 +537,17 @@ export default function EmployeeDashboard() {
     }
   };
 
+
+  // Work timer only runs if clocked in and not on break
+  const isClockedIn = Boolean(timeTracking.workStartMs) && !timeTracking.breakStartMs;
+  const isOnBreak = Boolean(timeTracking.breakStartMs);
   const workSeconds = timeTracking.workAccumulatedSeconds + (
-    timeTracking.workStartMs
+    isClockedIn
       ? Math.max(0, Math.floor((currentTimeMs - timeTracking.workStartMs) / 1000))
       : 0
   );
   const breakSeconds = timeTracking.breakAccumulatedSeconds + (
-    timeTracking.breakStartMs
+    isOnBreak
       ? Math.max(0, Math.floor((currentTimeMs - timeTracking.breakStartMs) / 1000))
       : 0
   );
@@ -610,15 +614,39 @@ export default function EmployeeDashboard() {
           <div className="bg-white rounded-lg shadow-sm p-6">
             <h2 className="text-lg font-semibold text-gray-800 mb-4">Today's Timers</h2>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+
               <div className="bg-slate-50 border border-slate-200 rounded-lg p-4">
                 <p className="text-xs uppercase tracking-wide text-slate-500 font-semibold mb-2">Work Timer</p>
-                <div className="flex items-center justify-between">
+                <div className="flex items-center justify-between gap-2">
                   <span className="text-2xl font-bold text-slate-900">{formatDuration(workSeconds)}</span>
-                  <span className={`text-xs font-medium px-2 py-1 rounded-full ${timeTracking.workStartMs ? 'text-green-600 bg-green-100' : 'text-slate-600 bg-slate-200'}`}>
-                    {timeTracking.workStartMs ? 'Running' : 'Paused'}
+                  <span className={`text-xs font-medium px-2 py-1 rounded-full ${isClockedIn ? 'text-green-600 bg-green-100' : 'text-slate-600 bg-slate-200'}`}>
+                    {isClockedIn ? 'Running' : 'Paused'}
                   </span>
+                  {/* Clock Out button: only show if clocked in and not on break */}
+                  {isClockedIn && !isOnBreak && (
+                    <button
+                      onClick={async () => {
+                        setTimerActionLoading(true);
+                        try {
+                          await timesheetAPI.pauseSession();
+                          setTimeTracking((prev) => ({
+                            ...prev,
+                            workStartMs: null
+                          }));
+                        } catch (err) {
+                          alert('Failed to clock out. Please try again.');
+                        } finally {
+                          setTimerActionLoading(false);
+                        }
+                      }}
+                      disabled={timerActionLoading}
+                      className="ml-2 px-3 py-1.5 rounded-md text-sm font-medium bg-red-800 text-white hover:bg-red-900 transition-colors disabled:opacity-60"
+                    >
+                      Clock Out
+                    </button>
+                  )}
                 </div>
-                <p className="text-xs text-slate-500 mt-2">Starts at login, pauses during break, and resets daily.</p>
+                <p className="text-xs text-slate-500 mt-2">Starts at login, pauses during break, and resets daily. Clock out to stop work timer.</p>
               </div>
 
               <div className={`border rounded-lg p-4 ${isBreakLimitExceeded ? 'bg-red-50 border-red-300' : 'bg-amber-50 border-amber-200'}`}>

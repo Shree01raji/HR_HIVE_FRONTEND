@@ -166,6 +166,10 @@ export default function LeaveApprovals() {
   };
 
   const toLower = (value) => String(value || '').toLowerCase();
+  const isCancelledStatus = (value) => {
+    const normalized = toLower(value);
+    return normalized === 'cancelled' || normalized === 'canceled';
+  };
 
   const isManagerReviewed = (leave) => {
     const statusValue = toLower(leave?.status);
@@ -215,6 +219,7 @@ export default function LeaveApprovals() {
 
   const filteredLeaves = leaves.filter(leave => {
     if (filter === 'manager_reviewed') return isManagerReviewedWithFallback(leave);
+    if (filter === 'cancelled') return isCancelledStatus(leave?.status);
     return toLower(leave?.status) === filter;
   });
 
@@ -243,6 +248,9 @@ export default function LeaveApprovals() {
         return 'bg-green-100 text-green-800';
       case 'rejected':
         return 'bg-red-100 text-red-800';
+      case 'cancelled':
+      case 'canceled':
+        return 'bg-gray-200 text-gray-700';
       default:
         return 'bg-gray-100 text-gray-800';
     }
@@ -255,6 +263,9 @@ export default function LeaveApprovals() {
       case 'approved':
         return <FiCheck className="w-4 h-4" />;
       case 'rejected':
+        return <FiX className="w-4 h-4" />;
+      case 'cancelled':
+      case 'canceled':
         return <FiX className="w-4 h-4" />;
       default:
         return <FiClock className="w-4 h-4" />;
@@ -304,8 +315,9 @@ export default function LeaveApprovals() {
         <div className="flex space-x-1 bg-gray-100 p-1 rounded-lg w-fit">
           {[
             { key: 'manager_reviewed', label: 'Manager Reviewed', count: leaves.filter(l => isManagerReviewedWithFallback(l)).length },
-            { key: 'approved', label: 'Approved', count: leaves.filter(l => l.status.toLowerCase() === 'approved').length },
-            { key: 'rejected', label: 'Rejected', count: leaves.filter(l => l.status.toLowerCase() === 'rejected').length }
+            { key: 'approved', label: 'Approved', count: leaves.filter(l => toLower(l.status) === 'approved').length },
+            { key: 'rejected', label: 'Rejected', count: leaves.filter(l => toLower(l.status) === 'rejected').length },
+            { key: 'cancelled', label: 'Employee Cancelled', count: leaves.filter(l => isCancelledStatus(l.status)).length }
           ].map(tab => (
             <button
               key={tab.key}

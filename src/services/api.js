@@ -1682,6 +1682,10 @@ export const projectsAPI = {
 
 // Timesheet API
 export const timesheetAPI = {
+    pauseSession: async (payload = {}) => {
+      const response = await api.post('/timesheet/pause-session', payload);
+      return response.data;
+    },
   createEntry: async (entryData) => {
     const response = await api.post('/timesheet/entries', entryData);
     return response.data;
@@ -3026,9 +3030,26 @@ export const preEmploymentAPI = {
     if (status) params.status_filter = status;
     const response = await api.get('/pre-employment', { params });
     return response.data;
+     },
+  getFieldConfigs: async (includeInactive = false) => {
+    const response = await api.get('/pre-employment/config/fields', {
+      params: { include_inactive: includeInactive }
+    });
+    return response.data;
+  },
+  createFieldConfig: async (payload) => {
+    const response = await api.post('/pre-employment/config/fields', payload);
+    return response.data;
+  },
+  updateFieldConfig: async (fieldId, payload) => {
+    const response = await api.put(`/pre-employment/config/fields/${fieldId}`, payload);
+    return response.data;
+ 
   }
 };
 
+// Backward-compat alias for legacy misspelled imports
+export const PreEmploymentAPI = preEmploymentAPI;
 // Organization API
 export const organizationAPI = {
   list: async (skip = 0, limit = 100, includeInactive = false) => {
